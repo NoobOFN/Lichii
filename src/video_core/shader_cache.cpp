@@ -340,7 +340,10 @@ const ShaderInfo* ShaderCache::ComputeShader() {
                                                      *kepler_compute, *gpu_memory, bank, offset);
                                              }))
             throw Shader::Ampere::TrapGuardError{};
-    } else if (kepler_compute->IsNativeMode() && IsRejected(*cpu_shader_addr)) {
+    } else if (kepler_compute->IsNativeMode() && kepler_compute->EmulatesNativeTensorPrograms() &&
+               IsRejected(*cpu_shader_addr)) {
+        // Where tensor programs aren't emulated the rethrow below reaches the upscale stand-in,
+        // which needs the "matrix multiply" reason on every dispatch.
         // A rejected program fails the same way on every dispatch. GetGraphicsEnvironments
         // skips those draws without rethrowing; doing the same here avoids two C++ throws, a
         // mutex-guarded insert and an exception_ptr for each dispatch of the program. The

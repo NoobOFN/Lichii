@@ -36,7 +36,11 @@
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
+<<<<<<< HEAD
 #include "video_core/buffer_cache/indirect_buffer.h"
+=======
+#include "video_core/native_lowering.h"
+>>>>>>> 4ac930966a (nx2: upscale stand-in for tensor programs the host does not emulate)
 #include "video_core/native_query_trace.h"
 #include "video_core/native_indirect_reset.h"
 #include "video_core/render_trace.h"
@@ -483,8 +487,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
-    oot_performance_scale =
-        Settings::AppliedOcarinaRenderScale() == Settings::NvidiaDlssQuality::Performance;
+    VideoCommon::SetNativeMatrixRejected(!EmulatesNativeTensorPrograms());
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -3766,6 +3769,25 @@ bool RasterizerVulkan::UsesNvidiaDlss() const {
     return texture_cache_runtime.UsesNvidiaDlss();
 }
 
+bool RasterizerVulkan::EmulatesNativeTensorPrograms() const {
+    // EDEN_NX2_TENSOR_EMULATION=0 never emulates them, =1 always does.
+    if (const char* option = std::getenv("EDEN_NX2_TENSOR_EMULATION"); option && *option) {
+        return *option != '0';
+    }
+    // Mesa's Intel driver takes minutes to compile an emulated network (Ocarina of Time's has 768
+    // matrix multiplies) and then runs it at about 8 FPS. The upscale stand-in draws instead.
+    // The Steam Deck's Van Gogh GPU (RADV) is the same: the network keeps all 8 CUs busy and the
+    // intro stays at 8 FPS, against about 55 FPS without it.
+    switch (device.GetDriverID()) {
+    case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:
+        return false;
+    case VK_DRIVER_ID_MESA_RADV:
+        return device.GetModelName().find("VANGOGH") == std::string_view::npos;
+    default:
+        return true;
+    }
+}
+
 bool RasterizerVulkan::SupportsGameDlssNetwork() const {
     // Compute pipelines are created 32 threads wide where the device can be told to.
     return device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
@@ -4729,7 +4751,7 @@ void RasterizerVulkan::UpdateDepthCompareOp(Tegra::Engines::Maxwell3D::Regs& reg
         return;
     }
     scheduler.Record([func = regs.depth_test_func](vk::CommandBuffer cmdbuf) {
-        cmdbuf.SetDepthCompareOpEXT(MaxwellToVK::ComparisonOp(func));
+        cmdbuf.SetDepthCompareOpEXT(MaxwellToVK::DepthComparisonOp(func));
     });
 }
 

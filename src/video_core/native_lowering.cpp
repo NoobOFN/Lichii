@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #include "common/cityhash.h"
+#include "common/settings.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/ampere/program_override.h"
@@ -15,6 +17,20 @@
 namespace VideoCommon {
 
 using Shader::Ampere::Instruction;
+
+namespace {
+std::atomic<bool> g_native_matrix_rejected{};
+} // Anonymous namespace
+
+void SetNativeMatrixRejected(bool rejected) {
+    g_native_matrix_rejected.store(rejected, std::memory_order_relaxed);
+}
+
+bool RejectsNativeMatrix() {
+    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    return g_native_matrix_rejected.load(std::memory_order_relaxed) &&
+           Settings::GetCurrentProgramID() != DonkeyKongBananzaProgramId;
+}
 
 std::vector<u32> NativeTrapOffsets(std::span<const Instruction> native) {
     std::vector<u32> offsets;
@@ -35,6 +51,7 @@ Shader::Ampere::LoweredProgram LowerNativeProgram(std::span<const Instruction> n
     const std::vector<u32> verified_traps = NativeTrapOffsets(native);
     return Shader::Ampere::LowerToMaxwell(native, {.geometry = inputs.geometry,
                                                    .tensor = true,
+                                                   .reject_matrix = RejectsNativeMatrix(),
                                                    .native_code_address = inputs.native_code_address,
                                                    .verified_traps = verified_traps,
                                                    .tessellation_stage = inputs.tessellation_stage});
