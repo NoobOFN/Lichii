@@ -3,6 +3,8 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <cstring>
 #include <iterator>
 
 #include "common/assert.h"
@@ -609,6 +611,26 @@ VkFormat VertexFormat(const Device& device, Maxwell::VertexAttribute::Type type,
 
     return device.GetSupportedFormat(format, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
                                      FormatType::Buffer);
+}
+
+VkCompareOp DepthComparisonOp(Maxwell::ComparisonOp comparison) {
+    // EDEN_NX2_DEPTH_EQUAL=le|ge: run depth EQUAL as LEQUAL or GEQUAL, for prepass colour draws
+    // whose depth differs from the prepass by rounding.
+    static const VkCompareOp relaxed_equal = [] {
+        const char* const value = std::getenv("EDEN_NX2_DEPTH_EQUAL");
+        if (value != nullptr && std::strcmp(value, "le") == 0) {
+            return VK_COMPARE_OP_LESS_OR_EQUAL;
+        }
+        if (value != nullptr && std::strcmp(value, "ge") == 0) {
+            return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        }
+        return VK_COMPARE_OP_EQUAL;
+    }();
+    if (comparison == Maxwell::ComparisonOp::Equal_D3D ||
+        comparison == Maxwell::ComparisonOp::Equal_GL) {
+        return relaxed_equal;
+    }
+    return ComparisonOp(comparison);
 }
 
 VkCompareOp ComparisonOp(Maxwell::ComparisonOp comparison) {

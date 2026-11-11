@@ -7,6 +7,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 
 #include <boost/container/static_vector.hpp>
 
@@ -21,6 +22,16 @@
 
 namespace Shader::Backend::SPIRV {
 namespace {
+/// EDEN_NX2_MESH_INVARIANT=1 decorates vertex and mesh positions Invariant, so two programs that
+/// compute a position the same way give bit-identical depth (depth EQUAL against a prepass).
+bool InvariantPositionsRequested() {
+    static const bool requested = [] {
+        const char* const value = std::getenv("EDEN_NX2_MESH_INVARIANT");
+        return value != nullptr && value[0] == '1';
+    }();
+    return requested;
+}
+
 enum class Operation {
     Increment,
     Decrement,
@@ -2059,6 +2070,9 @@ void EmitContext::DefineMesh(const IR::Program& program) {
             if (!Sirit::ValidId(output_position)) {
                 output_position = DefineVariable(*this, TypeArray(F32[4], vertex_count),
                                                  spv::BuiltIn::Position, spv::StorageClass::Output);
+                if (InvariantPositionsRequested()) {
+                    Decorate(output_position, spv::Decoration::Invariant);
+                }
             }
             return {output_position,
                     static_cast<u32>(attribute) - static_cast<u32>(IR::Attribute::PositionX), true};
@@ -2141,6 +2155,9 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
     if (runtime_info.convert_depth_mode || info.stores.AnyComponent(IR::Attribute::PositionX) ||
         stage == Stage::VertexB) {
         output_position = DefineOutput(*this, F32[4], invocations, spv::BuiltIn::Position);
+        if (InvariantPositionsRequested()) {
+            Decorate(output_position, spv::Decoration::Invariant);
+        }
     }
     if (info.stores[IR::Attribute::PointSize] || runtime_info.fixed_state_point_size) {
         if (stage == Stage::Fragment) {
