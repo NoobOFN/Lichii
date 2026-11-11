@@ -605,6 +605,10 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     is_optimal_astc_supported = ComputeIsOptimalAstcSupported();
     is_warp_potentially_bigger = !extensions.subgroup_size_control ||
                                  properties.subgroup_size_control.maxSubgroupSize > GuestWarpSize;
+    LOG_INFO(Render_Vulkan, "Subgroup size control: {}, sizes {}-{}, required stages {:#x}",
+             extensions.subgroup_size_control, properties.subgroup_size_control.minSubgroupSize,
+             properties.subgroup_size_control.maxSubgroupSize,
+             static_cast<u32>(properties.subgroup_size_control.requiredSubgroupSizeStages));
 
     is_integrated = properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     is_virtual = properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
@@ -1736,7 +1740,14 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // Disable VertexInputDynamicState on old Intel Windows drivers
     if (extensions.vertex_input_dynamic_state) {
         const u32 version = (properties.properties.driverVersion << 3) >> 3;
-        if ((driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && version < VK_MAKE_API_VERSION(27, 20, 100, 0))
+        // Intel's Windows driver reports major << 14 | minor (renderer_vulkan.cpp's
+        // GetDriverVersion), so 101.8991 is far below VK_MAKE_API_VERSION(27, 20, 100, 0) and every
+        // current driver looked old. 27.20.100.x drivers report major 100.
+        // EDEN_NX2_INTEL_VIDS=0 keeps the extension off.
+        const char* const intel_vids = std::getenv("EDEN_NX2_INTEL_VIDS");
+        const bool intel_vids_off = intel_vids != nullptr && intel_vids[0] == '0';
+        if ((driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS &&
+             ((version >> 14) < 100 || intel_vids_off))
         || (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && properties.properties.driverVersion < NvidiaDriverVersion(580, 119, 2))) {
             LOG_WARNING(Render_Vulkan, "Disabling broken VK_EXT_vertex_input_dynamic_state");
             RemoveExtensionFeature(extensions.vertex_input_dynamic_state, features.vertex_input_dynamic_state, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);

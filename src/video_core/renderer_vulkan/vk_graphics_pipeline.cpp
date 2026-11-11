@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -2007,7 +2009,7 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .depthTestEnable = dynamic.depth_test_enable,
         .depthWriteEnable = dynamic.depth_write_enable,
         .depthCompareOp = dynamic.depth_test_enable
-                              ? MaxwellToVK::ComparisonOp(dynamic.DepthTestFunc())
+                              ? MaxwellToVK::DepthComparisonOp(dynamic.DepthTestFunc())
                               : VK_COMPARE_OP_ALWAYS,
         .depthBoundsTestEnable = dynamic.depth_bounds_enable && device.IsDepthBoundsSupported(),
         .stencilTestEnable = dynamic.stencil_enable,
@@ -2190,6 +2192,14 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
                                    info.uses_subgroup_shuffles || info.uses_subgroup_mask;
         const bool force_warp_size = !emulated_vertex && uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
                                      device.IsGuestWarpSizeSupported(stage_flag);
+        if (uses_warp_ops) {
+            static std::array<std::atomic<u32>, 32> warp_logged{};
+            const u32 warp_slot = static_cast<u32>(std::countr_zero(static_cast<u32>(stage_flag)));
+            if (warp_logged[warp_slot & 31].fetch_add(1, std::memory_order_relaxed) == 0) {
+                LOG_INFO(Render_Vulkan, "Warp ops in stage {:#x}: required size {}", static_cast<u32>(stage_flag),
+                         force_warp_size ? "chained" : "unavailable");
+            }
+        }
         shader_stages.emplace_back(VkPipelineShaderStageCreateInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .pNext = force_warp_size ? &subgroup_size_ci : nullptr,
