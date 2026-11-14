@@ -5,6 +5,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
+<h2 align="center">⚠️ Lichii for Intel Xe3 Experimental ⚠️</h2>
+based on [releases page](https://github.com/zortos293/Lichii/releases)
+
 <h2 align="center">⚠️ Lichii has no official website ⚠️</h2>
 
 > [!CAUTION]
