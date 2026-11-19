@@ -1462,13 +1462,19 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
         return false;
     }
     // EDEN_NX2_GPU_PROFILE=1: name every compute program the bypass examines, once each, with the
-    // image its output handle points at. A build of the game whose output pass key is none of the
-    // three below keeps running its whole anti-aliasing network, and this says which key it uses.
+    // grid and every image handle its code reads (r) and stores to (w), read from cbuf0 at dispatch
+    // time. A build of the game whose output pass key is none of the three below keeps running its
+    // whole anti-aliasing network; this says which program replaces it and at which offset.
     if (VideoCommon::Nx2Profile::Enabled()) {
         static std::mutex seen_mutex;
         static std::unordered_set<u64> seen_keys;
-        std::scoped_lock seen_lock{seen_mutex};
-        if (seen_keys.insert(native_key).second) {
+        bool first{};
+        {
+            // Nothing but the set is touched under the lock: logging takes its own locks.
+            std::scoped_lock seen_lock{seen_mutex};
+            first = seen_keys.insert(native_key).second;
+        }
+        if (first) {
             const bool base_output =
                 std::ranges::find(BaseOutputPrograms, native_key, &BaseOutputProgram::key) !=
                 BaseOutputPrograms.end();
@@ -1477,17 +1483,45 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
                                : native_key == OutputProgramKey    ? "output"
                                : base_output                       ? "base output"
                                                                    : "unknown";
-            const auto handle = ConstBuffer0Image(OutputImageHandleOffset);
+            const GPUVAddr program = regs.code_loc.Address() + launch_description.program_start;
+            std::string images;
+            if (memory_manager.IsFullyMappedRange(program, sizeof(u32))) {
+                const auto& cbuf0 = launch_description.const_buffer_config[0];
+                const GPUVAddr cb0 = (GPUVAddr{cbuf0.address_high} << 32) | cbuf0.address_low;
+                const auto image_at = [&](u32 offset) -> std::optional<Texture::TICEntry> {
+                    if (offset + sizeof(u32) > cbuf0.size.Value()) {
+                        return std::nullopt;
+                    }
+                    const u32 handle = memory_manager.Read<u32>(cb0 + offset);
+                    if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) {
+                        return std::nullopt;
+                    }
+                    return GetTICEntry(handle & 0xfffff);
+                };
+                const auto append = [&](const char* kind, u32 offset) {
+                    const auto entry = image_at(offset);
+                    images += fmt::format(
+                        " {}{:#x}:{}", kind, offset,
+                        entry ? fmt::format("{:#x} {}x{} format {} block {}", entry->Address(),
+                                            entry->Width(), entry->Height(),
+                                            static_cast<u32>(entry->format.Value()),
+                                            entry->IsBlockLinear())
+                              : std::string{"none"});
+                };
+                const auto [reads, stores] = NativeImageHandles(program);
+                for (const u32 offset : reads) {
+                    append("r", offset);
+                }
+                for (const u32 offset : stores) {
+                    append("w", offset);
+                }
+            }
             LOG_INFO(HW_GPU,
-                     "Ocarina of Time: bypass program {:#x} ({}): output handle {}, tonemapped "
-                     "{:#x} {}x{}",
-                     native_key, name,
-                     handle ? fmt::format("{:#x} {}x{} format {} block linear {}",
-                                          handle->Address(), handle->Width(), handle->Height(),
-                                          static_cast<u32>(handle->format.Value()),
-                                          handle->IsBlockLinear())
-                            : std::string{"unreadable"},
-                     tonemapped.Address(), tonemapped.width, tonemapped.height);
+                     "Ocarina of Time: bypass program {:#x} ({}) at {:#x} grid {}x{}x{}, tonemapped "
+                     "{:#x} {}x{}:{}",
+                     native_key, name, program, launch_description.grid_dim_x.Value(),
+                     launch_description.grid_dim_y.Value(), launch_description.grid_dim_z.Value(),
+                     tonemapped.Address(), tonemapped.width, tonemapped.height, images);
         }
     }
     // EDEN_NX2_OOT_SKIP_HEAVY: the update dispatches a heavy pass between the prepass and the
