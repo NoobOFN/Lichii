@@ -751,6 +751,54 @@ void Scheduler::ReportWorkTimes() {
         std::array<u32, 3> max_size{};
     };
     std::map<std::pair<u64, u64>, Totals> by_shaders;
+    // Duration shape per kind of work. A mean of 7us over thousands of draws says nothing about
+    // whether merging them pays; the spread does. Graphics work has a fragment hash, compute none.
+    static constexpr std::array<double, 10> shape_us{1, 2, 4, 8, 16, 32, 64, 128, 256, 512};
+    struct Shape {
+        std::array<u32, shape_us.size() + 1> buckets{};
+        double ms{};
+        double max_ms{};
+        u32 count{};
+    };
+    const auto add_shape = [](Shape& shape, double ms) {
+        shape.ms += ms;
+        shape.max_ms = std::max(shape.max_ms, ms);
+        ++shape.count;
+        const double us = ms * 1000.0;
+        u32 bucket = 0;
+        while (bucket < shape_us.size() && us >= shape_us[bucket]) {
+            ++bucket;
+        }
+        ++shape.buckets[bucket];
+    };
+    const auto log_shape = [](const char* name, const Shape& shape) {
+        if (shape.count == 0) {
+            return;
+        }
+        const auto percentile_us = [&shape](double p) {
+            const double target = p * shape.count;
+            double cumulative = 0;
+            for (size_t b = 0; b < shape.buckets.size(); ++b) {
+                const double here = shape.buckets[b];
+                if (here > 0 && cumulative + here >= target) {
+                    const double lo = b == 0 ? 0.0 : shape_us[b - 1];
+                    const double hi = b < shape_us.size() ? shape_us[b] : shape_us.back() * 8;
+                    return lo + (hi - lo) * ((target - cumulative) / here);
+                }
+                cumulative += here;
+            }
+            return shape_us.back();
+        };
+        LOG_INFO(Render_Vulkan,
+                 "DKB gpu_work_shape {} {}x mean {:.2f}us p10 {:.2f}us p50 {:.2f}us p90 {:.2f}us "
+                 "p99 {:.2f}us max {:.2f}us total {:.3f}ms",
+                 name, shape.count, shape.ms * 1000.0 / shape.count, percentile_us(0.10),
+                 percentile_us(0.50), percentile_us(0.90), percentile_us(0.99),
+                 shape.max_ms * 1000.0, shape.ms);
+    };
+    Shape shape_all;
+    Shape shape_graphics;
+    Shape shape_compute;
     double total_ms{};
     for (u32 i = 0; i < count; ++i) {
         if (results[i * 2].available == 0 || results[i * 2 + 1].available == 0) {
@@ -768,6 +816,8 @@ void Scheduler::ReportWorkTimes() {
             totals.max_ms = ms;
             totals.max_size = item.size;
         }
+        add_shape(shape_all, ms);
+        add_shape(item.fragment_hash == 0 ? shape_compute : shape_graphics, ms);
         total_ms += ms;
     }
     std::vector<std::pair<std::pair<u64, u64>, Totals>> sorted(by_shaders.begin(),
@@ -790,6 +840,9 @@ void Scheduler::ReportWorkTimes() {
     LOG_INFO(Render_Vulkan,
              "DKB gpu_work renderer_frame={} timed={} timed_sum_ms={:.3f} slowest:{}",
              trace_sample_frame, count, total_ms, slowest);
+    log_shape("all", shape_all);
+    log_shape("graphics", shape_graphics);
+    log_shape("compute", shape_compute);
 }
 
 void Scheduler::RecordSiteMarker(std::source_location location) {
