@@ -69,6 +69,17 @@ The game's constants (shader hashes, program keys, the cb0 offset) are in
 - The known shader keys cover base 1.0.0 (main build ID
   `33FA6C2C23848282A77E8B88A0A93F4887C55920`) and update 1.1.1
   (`E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348`). A different revision needs its shaders checked.
+- **Handheld mode has no output pass.** `EDEN_NX2_GPU_PROFILE=1` names every compute program the
+  bypass examines (`Ocarina of Time: bypass program <key> (<label>) at <address> grid AxBxC, tonemapped
+  <address> WxH: r<offset>:<image> w<offset>:<image>`). In handheld at scene 1440x810, a 60 s run of
+  the 1.1.1 build found the prepass (`8475d671e6967428`, reads the tonemapped image at cb0+0x148,
+  writes a 360x203 image at +0x150) and the network (`42593194bb0b2b32`, reads the tonemapped image and
+  a 1440x810 image at +0xa8/+0xb8, writes 1440x810 at +0xd0), but **no program writing a 1440x810
+  image besides the network**: the output pass key `da6df3e54c716df2` never reaches the bypass and no
+  unknown key stores at that size. The frame therefore takes its image from the network's own output,
+  `output_replaced` stays false, the prepass and network run every frame, and `EDEN_NX2_OOT_SKIP_HEAVY`
+  cannot fire (it needs the replacement). The measured runs above were docked, where the output pass
+  exists.
 - B10G11R11 has little precision in dark tones: without the network's smoothing some banding
   shows in deep shadows.
 - The heavy dispatch between the prepass and the network still runs; its result goes unused.
