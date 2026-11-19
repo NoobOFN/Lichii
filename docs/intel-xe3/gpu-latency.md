@@ -86,9 +86,45 @@ mesh stays.
 | uploads, flushes, image copies | 1.9 | | |
 | barriers, pass begin/end, present | 5.8 | | |
 
-The per-draw figure is the one that matters: 6.3 us for a draw of a few hundred vertices is front-end
-state cost (2 bind-stage-buffer calls, descriptor and dynamic-state updates per draw), not shading.
-One compute dispatch of a 4x4x6 grid also costs 2.1 ms, which is a serial loop behind 96 threads.
+The per-draw figure is an average, and `DKB gpu_work_shape` (added for this) shows the average says
+nothing on its own: over 2 663-2 868 draws a frame the middle draw costs 1.0-1.5 us, the 90th
+percentile 13.5-14.6 us and the 99th 60-81 us, with 10 % of draws under 0.25 us. Half the draws are
+worth under 1.8 ms of the ~19 ms (9 %), so merging or batching them cannot pay: the cost is in a
+minority of heavy draws, which is guest geometry and shading rather than per-draw front-end state.
+The front end still owns the CPU side of a draw (two `bind stage buffers` calls, 0.5 us each), where
+there is slack anyway.
+
+One compute dispatch of a 4x4x6 grid also costs 1.5-2.1 ms, which is a serial loop behind 96 threads.
+
+## The occlusion query copies: waiting on every query
+
+`PresyncWrites` copies every pending query pool into a resolve buffer, 17-18 times a frame, and the
+copy asked for `VK_QUERY_RESULT_WAIT_BIT` over the whole range. The AMD path already knows why that
+is wrong there - "AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query,
+~5 ms a frame in Ocarina)" - and waits on the newest query only, then copies the rest unwaited.
+`EDEN_NX2_QUERY_WAIT_LAST=1` applies that to every driver.
+
+Intel pays the same per-query wait: 220 us a copy for ~70 slots, 3.1 us each. Both runs with the
+frame trace on, same scene size:
+
+| | before | `EDEN_NX2_QUERY_WAIT_LAST=1` |
+|---|---|---|
+| the copy site | 3.4 - 4.3 ms, 17-19 calls | 2.7 - 2.8 ms, 17-18 calls |
+| draws | 18.6 - 20.1 ms | 16.9 - 18.2 ms |
+| compute | 8.9 - 10.6 ms | 8.2 - 8.5 ms |
+| GPU busy | 50.8 - 51.7 ms | 42.0 - 44.1 ms |
+| fps | 16.2 - 18.3 | 18.8 - 19.9 |
+
+The site explains 1.3 ms of the 7.7: every other site falls too, which is what a drain removed looks
+like - each per-query wait forced the GPU to reach the query behind it before the copy could start,
+serialising the frame. The player saw no occlusion glitches (missing or flickering objects).
+
+The remaining 2.7 ms is not overhead: the copy reads the newest query, so the GPU has to reach it, and
+the guest asks for results 17-18 times a frame. Waiting later is not an option (`vkGetQueryPoolResults`
+would add a host read without removing the copy, see below).
+
+The 7.7 ms was measured across two sessions, so a same-session A/B without the trace is what settles
+it; the switch is not merged until that runs.
 
 ## Comparing two runs
 
@@ -249,10 +285,16 @@ Audited after the runs and the profile above, with the code in hand:
 3. **Query values: a host read does not remove the copy.** `PresyncWrites` copies the pool into a
    resolve buffer, and `SyncValues` then copies that buffer into guest memory, which is where the game
    reads its counters - so `vkGetQueryPoolResults` would add a host read without removing a command.
+   Its per-query wait was the exception and is fixed (`EDEN_NX2_QUERY_WAIT_LAST`, see above); the
+   2.7 ms that stays is the GPU reaching the newest query, 17-18 times a frame.
 4. **A pending fragment barrier** (`vk_graphics_pipeline.cpp:1255`) ends the pass; it is the feedback
    loop path, 5 a frame.
 5. **The submission policy** is not a lever: measured, `EDEN_NX2_FLUSH_DRAWS=512` removes its 15 passes
    and 1.8 ms of GPU but loses 2 fps to the handoff. 128 stays.
+6. **Merging or batching draws is settled against.** `DKB gpu_work_shape` puts the middle draw at
+   1.0-1.5 us and the 99th percentile at 60-81 us, so the cheap half of a frame's draws is worth under
+   1.8 ms of 19. Only the heavy minority costs, and that is guest geometry and shading. Worth
+   remembering before anyone writes a draw merger.
 
 Already optimal, checked and left alone: the clear path (`vk_rasterizer.cpp:2275`) only ends a pass
 when the clear targets *another* framebuffer - a deferred clear becomes the next pass's load op, and a
