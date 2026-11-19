@@ -1461,6 +1461,35 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     if (tonemapped.Address() == 0) {
         return false;
     }
+    // EDEN_NX2_GPU_PROFILE=1: name every compute program the bypass examines, once each, with the
+    // image its output handle points at. A build of the game whose output pass key is none of the
+    // three below keeps running its whole anti-aliasing network, and this says which key it uses.
+    if (VideoCommon::Nx2Profile::Enabled()) {
+        static std::mutex seen_mutex;
+        static std::unordered_set<u64> seen_keys;
+        std::scoped_lock seen_lock{seen_mutex};
+        if (seen_keys.insert(native_key).second) {
+            const bool base_output =
+                std::ranges::find(BaseOutputPrograms, native_key, &BaseOutputProgram::key) !=
+                BaseOutputPrograms.end();
+            const char* name = native_key == PrepassProgramKey     ? "prepass"
+                               : native_key == NetworkProgramKey   ? "network"
+                               : native_key == OutputProgramKey    ? "output"
+                               : base_output                       ? "base output"
+                                                                   : "unknown";
+            const auto handle = ConstBuffer0Image(OutputImageHandleOffset);
+            LOG_INFO(HW_GPU,
+                     "Ocarina of Time: bypass program {:#x} ({}): output handle {}, tonemapped "
+                     "{:#x} {}x{}",
+                     native_key, name,
+                     handle ? fmt::format("{:#x} {}x{} format {} block linear {}",
+                                          handle->Address(), handle->Width(), handle->Height(),
+                                          static_cast<u32>(handle->format.Value()),
+                                          handle->IsBlockLinear())
+                            : std::string{"unreadable"},
+                     tonemapped.Address(), tonemapped.width, tonemapped.height);
+        }
+    }
     // EDEN_NX2_OOT_SKIP_HEAVY: the update dispatches a heavy pass between the prepass and the
     // network, and only the network reads its result (docs/nx2/oot-network-bypass.md). While the
     // output pass is a copy of the tonemap, the prepass and the network are skipped, so that pass
@@ -1472,6 +1501,14 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     const bool replaced = bypass->output_replaced.load(std::memory_order_relaxed);
     if (native_key == PrepassProgramKey) {
         oot_heavy_skip_remaining = skip_heavy && replaced ? 1u : 0u;
+        if (!replaced) {
+            static bool logged = false;
+            if (!std::exchange(logged, true)) {
+                LOG_INFO(HW_GPU,
+                         "Ocarina of Time: the network's prepass runs while the output pass is not "
+                         "replaced (EDEN_NX2_OOT_SKIP_HEAVY cannot skip anything)");
+            }
+        }
         return replaced;
     }
     if (native_key == NetworkProgramKey) {
