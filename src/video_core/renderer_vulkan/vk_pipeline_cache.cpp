@@ -525,6 +525,26 @@ size_t GetTotalPipelineWorkers() {
     }
     return std::min(max_core_threads, desired);
 #else
+    // Every worker is a thread the guest cores and the GPU threads share the host with. On a CPU
+    // with few fast cores and many slow ones, a compile burst makes hardware_concurrency() - 1
+    // workers compete with them: EDEN_NX2_PIPELINE_WORKERS=<n> caps the count to measure that,
+    // and to tune it, without rebuilding.
+    static const size_t configured = [] {
+        const char* value = std::getenv("EDEN_NX2_PIPELINE_WORKERS");
+        if (value == nullptr || *value == '\0') {
+            return size_t{0};
+        }
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed < 2 || parsed > 64) {
+            LOG_WARNING(Render_Vulkan,
+                        "Ignoring EDEN_NX2_PIPELINE_WORKERS value '{}' (2 to 64)", value);
+            return size_t{0};
+        }
+        return static_cast<size_t>(parsed);
+    }();
+    if (configured != 0) {
+        return std::min(max_core_threads, configured);
+    }
     return max_core_threads;
 #endif
 }

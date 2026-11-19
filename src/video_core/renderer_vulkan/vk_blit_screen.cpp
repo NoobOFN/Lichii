@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/present/layer.h"
 #include "video_core/renderer_vulkan/present/util.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
+#include "video_core/renderer_vulkan/nx2_frame_limit.h"
 #include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -124,6 +125,13 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
                              const Layout::FramebufferLayout& layout,
                              size_t current_swapchain_image_count,
                              VkFormat current_swapchain_view_format, const HdrPresent& output) {
+    if (!framebuffers.empty()) {
+        FrameLimit::NoteGuestSize(framebuffers.front().width, framebuffers.front().height);
+    }
+    // The guest's last render pass can still be open: a WaitForIdle records its barrier inside it
+    // (vk_rasterizer.cpp, EDEN_NX2_WFI_KEEP_PASS). This pass reads the guest framebuffer and begins
+    // one of its own, so the guest's has to be closed - and its tiles stored - first.
+    scheduler.RequestOutsideRenderPassOperationContext();
     bool resource_update_required = false;
     bool presentation_recreate_required = false;
 

@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <span>
 #include <thread>
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
@@ -133,6 +134,10 @@ void SetCurrentThreadToPerformanceCores();
 void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
+#ifdef _WIN32
+/// Select Windows CPU set IDs for the current thread.
+void SelectCurrentThreadCpuSetIds(std::span<const u32> ids);
+#endif
 
 enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
 

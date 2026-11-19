@@ -138,6 +138,15 @@ public:
     void RequestOutsideRenderPassOperationContext(
         std::source_location location = std::source_location::current());
 
+    /// Records a memory barrier without ending the active render pass. A memory barrier is legal
+    /// inside one, and ending the pass is not free on a tiled GPU: it stores every tile and reloads
+    /// it for the next draw. Ocarina of Time calls WaitForIdle 66 times a frame, each of which ended
+    /// the pass, so most of the frame was spent storing and reloading the render targets around
+    /// barriers. Host stages are dropped inside a pass, where the spec forbids them; the fences that
+    /// order host reads are unaffected.
+    void RecordMemoryBarrier(VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage,
+                             VkMemoryBarrier barrier);
+
     void DeferFragmentBarrier() {
         fragment_barrier.Defer(state.renderpass != VK_NULL_HANDLE);
     }

@@ -7,6 +7,9 @@
 #include <exception>
 #include <filesystem>
 #include <system_error>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
@@ -121,6 +124,29 @@ int main(int argc, char* argv[]) {
     SetUpNvidiaShaderDiskCache();
 #endif
     LoadNx2Switches(argv[0]);
+#if defined(_WIN32)
+    // Windows treats an emulator's emulation and GPU threads as background work and is then free to
+    // run the process at a reduced clock under Power Throttling. On a laptop whose P-cores drop from
+    // ~5 GHz to 2.5-3 GHz under load, this is the first thing to rule out.
+    // EDEN_NX2_NO_POWER_THROTTLE=0 keeps Windows' default.
+    if (const char* value = std::getenv("EDEN_NX2_NO_POWER_THROTTLE");
+        value == nullptr || *value == '\0' || *value != '0') {
+        PROCESS_POWER_THROTTLING_STATE throttling{};
+        throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        throttling.StateMask = 0;
+        // Fails harmlessly on Windows versions without the API.
+        (void)SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling,
+                                    sizeof(throttling));
+    }
+    // The emulation thread's own work (GPU front and back, present, shader workers) is what a
+    // laptop's power manager otherwise slows down; the emulation threads are already time-critical.
+    // EDEN_NX2_PROCESS_PRIORITY=0 keeps the default class.
+    if (const char* value = std::getenv("EDEN_NX2_PROCESS_PRIORITY");
+        value == nullptr || *value == '\0' || *value != '0') {
+        SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    }
+#endif
 #if LICHII_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {

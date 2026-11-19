@@ -88,6 +88,8 @@ static void LoadNx2Switches(const char* argv0) {
                  name == "EDEN_NATIVE_DRAW_DIAGNOSTICS" || name == "EDEN_NATIVE_FRAME_CAPTURE" ||
                  name == "EDEN_NATIVE_SHADER_OVERRIDE_DIR" || name == "EDEN_PUNCH_HOLE" ||
                  name == "EDEN_STARFOX_WINDOW_TRACE" || name == "EDEN_VI2_MAX_RESOLUTION_MODE" ||
+                 // Hybrid CPU placement (docs/intel-xe3/hybrid-cores.md).
+                 name == "EDEN_HYBRID_CORES" || name == "EDEN_HYBRID_BACKGROUND" ||
                  name == "EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK" ||
                  name == "EGLANTINE_TEST_VERTEX_REPACK");
     });

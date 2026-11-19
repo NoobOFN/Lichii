@@ -357,6 +357,9 @@ private:
     /// Native dispatches left to skip while a retained network is being replaced (bounded, so a
     /// non-network pass cannot silence the engine forever).
     u32 network_skip_remaining{};
+    /// EDEN_NX2_OOT_SKIP_HEAVY: the dispatch after Ocarina of Time's skipped prepass, whose result
+    /// only the skipped network reads, still to be skipped (0 when there is none).
+    u32 oot_heavy_skip_remaining{};
     /// Set when the replacement copy fails, so the full network runs from then on.
     bool native_upscale_disabled{};
 

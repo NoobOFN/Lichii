@@ -462,7 +462,12 @@ struct WindowsCpuSets {
     std::vector<Common::LogicalProcessor> processors;
     std::vector<ULONG> performance;
     std::vector<ULONG> efficiency;
+    /// Enough performance processors for the time-critical threads to share.
     bool hybrid = false;
+    /// Background work takes the slower processors (EDEN_HYBRID_BACKGROUND=1). It does not depend
+    /// on hybrid: a CPU with too few performance processors for the placement above still has
+    /// slower ones the shader workers can have, where they only slow the workers down.
+    bool background = false;
 };
 
 const WindowsCpuSets& CpuSets() {
@@ -529,6 +534,20 @@ const WindowsCpuSets& CpuSets() {
                      "time-critical threads stay on the performance cores",
                      result.performance.size(), result.efficiency.size());
         }
+        // Shader workers and other background jobs are not latency-sensitive: on the slower
+        // processors they cannot take a core from the time-critical threads, and a compile that
+        // takes longer there holds fewer bytes of commit while the critical threads run. Off by
+        // default: a driver compile runs slower on an efficiency core, which shows as a longer
+        // first-visit stutter, so this is measured before it is kept.
+        if (const char* option = std::getenv("EDEN_HYBRID_BACKGROUND");
+            option != nullptr && std::strtol(option, nullptr, 10) != 0) {
+            result.background = !result.efficiency.empty();
+            if (result.background) {
+                LOG_INFO(Common,
+                         "Background work on the {} slower logical processors (EDEN_HYBRID_BACKGROUND)",
+                         result.efficiency.size());
+            }
+        }
         return result;
     }();
     return sets;
@@ -547,6 +566,15 @@ void SelectCurrentThreadCpuSets(const std::vector<ULONG>& ids) {
     }
 }
 } // Anonymous namespace
+
+void Common::SelectCurrentThreadCpuSetIds(std::span<const u32> ids) {
+    std::vector<ULONG> windows_ids;
+    windows_ids.reserve(ids.size());
+    for (const u32 id : ids) {
+        windows_ids.push_back(static_cast<ULONG>(id));
+    }
+    SelectCurrentThreadCpuSets(windows_ids);
+}
 #endif
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -806,7 +834,10 @@ void SetCurrentThreadToBackgroundWork() {
     ADPF::AddCurrentThread(ADPF::Session::Background);
     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
 #elif defined(_WIN32)
-    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
+    const WindowsCpuSets& sets = CpuSets();
+    if (sets.background) {
+        SelectCurrentThreadCpuSets(sets.efficiency);
+    } else if (sets.hybrid) {
         SelectCurrentThreadCpuSets({});
     }
 #endif

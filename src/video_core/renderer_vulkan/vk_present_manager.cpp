@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <thread>
 
 #include "common/display_hdr.h"
@@ -17,6 +18,7 @@
 #include "video_core/nx2_profile.h"
 #ifdef HAS_LSFG
 #include "video_core/renderer_vulkan/present/lsfg_common.h"
+#include "video_core/renderer_vulkan/nx2_frame_limit.h"
 #endif
 #include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -612,10 +614,17 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
         return;
     }
 
+    const auto image_wait_begin = std::chrono::steady_clock::now();
     while (swapchain.AcquireNextImage(!use_present_thread)) {
         if (!RecreateSwapchain(frame)) {
             return;
         }
+    }
+    double image_wait_ms{};
+    if (FrameLimit::Enabled()) {
+        image_wait_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - image_wait_begin)
+                            .count();
     }
 
     const vk::CommandBuffer cmdbuf{frame->cmdbuf};
@@ -774,12 +783,20 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
         });
     }
 #endif
+    const auto present_begin = std::chrono::steady_clock::now();
     swapchain.Present(render_semaphore);
 #ifdef EGLANTINE_STREAMLINE
     if (frame->frame_gen) {
         Streamline::FrameGenAfterPresent(frame->frame_gen_frame.index);
     }
 #endif
+    if (FrameLimit::Enabled()) {
+        const double present_ms = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - present_begin)
+                                      .count();
+        FrameLimit::NotePresent(scheduler.GpuBusyMs(), image_wait_ms, present_ms, frame->width,
+                                frame->height);
+    }
 }
 
 } // namespace Vulkan

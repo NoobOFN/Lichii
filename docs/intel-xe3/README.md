@@ -186,6 +186,24 @@ cores without hyper-threading here, which makes every hand-off slower. A CPU wit
 performance cores should do better; that is a guess from the code's own thresholds, not a
 measurement.
 
+Measured later on the Core Ultra 9 386H with `EDEN_NX2_FRAME_LIMIT=1`, the answer is the device, not
+the hand-offs: 36-46 ms of GPU busy time inside a 43-51 ms interval (83-91 %), ~2.7 k draws and ~150
+render passes a frame at 2560x1440, and 4-8 ms a frame outside the GPU time. The largest single item
+is what a draw costs the driver - 2.7 k draws at ~6 us is ~16 ms - and the second is the 150 render
+passes at 1440p. `EDEN_NX2_DELTA_CB=0` puts ~100 of those passes back and costs ~23 ms, so it stays at
+1. The figures, and the 15 % run-to-run spread of the same settings, are in
+[Where the frame time goes](gpu-latency.md).
+
+[Hybrid cores on Intel](hybrid-cores.md) has the switches used to measure thread placement on this
+kind of CPU: background shader work on the E-cores (`EDEN_HYBRID_BACKGROUND`), a worker-count cap
+(`EDEN_NX2_PIPELINE_WORKERS`), guest-core masks, and a skip for the one compute pass Ocarina of
+Time dispatches whose result the anti-aliasing bypass never reads (`EDEN_NX2_OOT_SKIP_HEAVY`).
+
+[Where the frame time goes](gpu-latency.md) documents `EDEN_NX2_FRAME_LIMIT=1`, which prints the
+real GPU busy time (queue timestamps, not Task Manager's number), the frame interval percentiles,
+the present waits and the submissions, draws and render passes per frame, with a verdict: the
+device, the swapchain, or the emulation threads leaving the GPU idle.
+
 ## Known issues
 
 - Heavy areas still drop to 18-20 FPS.

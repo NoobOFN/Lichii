@@ -32,6 +32,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
+#include "video_core/renderer_vulkan/nx2_frame_limit.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -48,6 +49,7 @@ std::mutex g_profile_end_mutex;
 std::map<std::string, u64> g_profile_ends;
 
 void CountRenderPassEnd(const char* file, u32 line) {
+    FrameLimit::NoteRenderPass();
     if (!VideoCommon::Nx2Profile::Enabled()) {
         return;
     }
@@ -177,6 +179,21 @@ Scheduler::~Scheduler() {
     }
 }
 
+void Scheduler::RecordMemoryBarrier(VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage,
+                                    VkMemoryBarrier barrier) {
+    if (state.renderpass) {
+        // Inside a render pass the spec forbids host stages and host access in a barrier. What host
+        // reads need is ordered by the fences that wait for this submission, not by the barrier.
+        src_stage &= ~VK_PIPELINE_STAGE_HOST_BIT;
+        dst_stage &= ~VK_PIPELINE_STAGE_HOST_BIT;
+        barrier.srcAccessMask &= ~(VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+        barrier.dstAccessMask &= ~(VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+    }
+    Record([src_stage, dst_stage, barrier](vk::CommandBuffer cmdbuf) {
+        cmdbuf.PipelineBarrier(src_stage, dst_stage, 0, barrier);
+    });
+}
+
 u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
                      std::source_location location) {
     if (state.renderpass) {
@@ -297,7 +314,8 @@ void Scheduler::WaitWorker() {
 }
 
 Scheduler::FrameMark Scheduler::NextFrameMark() {
-    if (Common::DkbFrameTrace::Enabled()) {
+    // The frame limit report needs every frame timed, not one a second.
+    if (Common::DkbFrameTrace::Enabled() || FrameLimit::Enabled()) {
         return FrameMark::Both;
     }
     u32 marks = gpu_busy_marks.load(std::memory_order_relaxed);
@@ -932,6 +950,7 @@ void Scheduler::TraceGpuSubmission() {
                 results[i].timestamp, results[i + 1].timestamp, trace_timestamp_bits);
             const double duration_ms = static_cast<double>(ticks) * trace_timestamp_period / 1e6;
             total_ms += duration_ms;
+            FrameLimit::NoteSubmission(duration_ms);
             if (duration_ms >= 10.0 && duration_ms > slowest.back().first) {
                 slowest.back() = {duration_ms, i / 2};
                 std::ranges::sort(slowest, std::greater<>{});
@@ -1096,7 +1115,7 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             }
             if (trace_query_pool && !trace_gpu_failed && !trace_gpu_pending &&
                 trace_frame_mark != FrameMark::End &&
-                trace_gpu_rate.Ready(std::chrono::steady_clock::now())) {
+                (FrameLimit::Enabled() || trace_gpu_rate.Ready(std::chrono::steady_clock::now()))) {
                 trace_sample_frame = trace_frame_end + 1;
                 trace_gpu_sampling = true;
             }

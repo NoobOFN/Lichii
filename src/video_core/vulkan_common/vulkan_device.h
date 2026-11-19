@@ -742,6 +742,23 @@ FN_MAX_LIMIT_LIST
 
     /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).
     bool IsExtMeshShaderSupported() const {
+        // EDEN_NX2_NO_MESH_SHADER=1 hides VK_EXT_mesh_shader, so task/mesh programs take the
+        // emulated path (compute plus an indirect draw) on a device that has the extension. A
+        // device whose native mesh path is slow per draw can come out ahead: Ocarina of Time on
+        // Intel issues 68 native mesh draws a frame and they cost 92 us each, 6.3 ms of the frame.
+        static const bool hidden = [] {
+            const char* value = std::getenv("EDEN_NX2_NO_MESH_SHADER");
+            const bool on = value != nullptr && *value != '\0' && *value != '0';
+            if (on) {
+                LOG_INFO(Render_Vulkan,
+                         "VK_EXT_mesh_shader hidden (EDEN_NX2_NO_MESH_SHADER): task and mesh "
+                         "programs run emulated");
+            }
+            return on;
+        }();
+        if (hidden) {
+            return false;
+        }
         return extensions.mesh_shader && features.mesh_shader.taskShader &&
                features.mesh_shader.meshShader;
     }

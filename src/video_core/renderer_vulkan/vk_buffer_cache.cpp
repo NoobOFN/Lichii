@@ -581,11 +581,31 @@ bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
     if (Settings::values.disable_buffer_reorder) {
         return false;
     }
-    const bool can_use_upload_cmdbuf =
-        std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
-            return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
+    const bool any_used =
+        std::ranges::any_of(copies, [&](const VideoCommon::BufferCopy& copy) {
+            return buffer.IsRegionUsed(copy.dst_offset, copy.size);
         });
-    return can_use_upload_cmdbuf;
+    if (!any_used) {
+        return true;
+    }
+    // The regions were used, but only by work whose submission has finished: nothing in flight
+    // reads them, so the upload may still go to the upload command buffer and leave the render
+    // pass open. EDEN_NX2_REORDER_UPLOAD=0 keeps the conservative answer. Until this, every upload
+    // into a buffer used earlier in the frame ended the render pass (Ocarina of Time: ~32 a frame,
+    // each one storing and reloading every tile of the target it was drawing).
+    static const bool reorder_completed = [] {
+        const char* value = std::getenv("EDEN_NX2_REORDER_UPLOAD");
+        const bool on = value == nullptr || *value == '\0' || *value != '0';
+        if (!on) {
+            LOG_INFO(Render_Vulkan,
+                     "Buffer uploads keep to the ordered path (EDEN_NX2_REORDER_UPLOAD=0)");
+        }
+        return on;
+    }();
+    if (!reorder_completed) {
+        return false;
+    }
+    return IsFreeNow(buffer.LastUsageTick());
 }
 
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,

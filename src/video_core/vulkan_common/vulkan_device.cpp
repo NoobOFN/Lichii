@@ -25,6 +25,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/literals.h"
+#include "common/memory_detect.h"
 #include <ranges>
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -2369,9 +2370,21 @@ void Device::CollectPhysicalMemoryInfo() {
     }
     main_heap_size = limit(mem_properties.memoryHeaps[main_heap].size);
     if (is_integrated) {
+        // An integrated GPU's budget is its share of the host's memory, but what binds it here is
+        // the commit limit, not RAM: raising the cache past it starves the guest and the driver,
+        // and the cache is throttled anyway (TickFrame: "Host memory: N MiB of commit left"). A
+        // 32 GiB laptop with a small page file ran 21 fps at 4 GiB of cache and 17 fps at a
+        // larger one, so the flat cap stays until the commit limit is not the constraint.
         const s64 available_memory = static_cast<s64>(device_access_memory - device_initial_usage);
-        const u64 memory_size = Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive ? 6_GiB : 4_GiB;
-        device_access_memory = static_cast<u64>(std::max<s64>(std::min<s64>(available_memory - 8_GiB, memory_size), std::min<s64>(local_memory, memory_size)));
+        const u64 memory_size =
+            Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive
+                ? 6_GiB
+                : 4_GiB;
+        device_access_memory =
+            static_cast<u64>(std::max<s64>(std::min<s64>(available_memory - 8_GiB, memory_size),
+                                           std::min<s64>(local_memory, memory_size)));
+        LOG_INFO(Render_Vulkan, "Integrated GPU memory budget: {} MiB ({} of a {} MiB budget)",
+                 device_access_memory >> 20, memory_size >> 20, available_memory >> 20);
     } else {
         const u64 reserve_memory = std::min<u64>(device_access_memory / 8, 1_GiB);
         device_access_memory -= reserve_memory;

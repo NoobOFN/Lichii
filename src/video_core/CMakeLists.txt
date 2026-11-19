@@ -257,6 +257,7 @@ add_library(video_core STATIC
     renderer_vulkan/vk_shader_cache_v2.cpp
     renderer_vulkan/vk_shader_cache_v2.h
     renderer_vulkan/vk_present_manager.cpp
+    renderer_vulkan/nx2_frame_limit.cpp
     renderer_vulkan/vk_present_manager.h
     renderer_vulkan/vk_query_cache.cpp
     renderer_vulkan/vk_query_cache.h

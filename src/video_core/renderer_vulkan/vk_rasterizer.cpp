@@ -34,13 +34,10 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/indirect_buffer.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
-<<<<<<< HEAD
-#include "video_core/buffer_cache/indirect_buffer.h"
-=======
 #include "video_core/native_lowering.h"
->>>>>>> 4ac930966a (nx2: upscale stand-in for tensor programs the host does not emulate)
 #include "video_core/native_query_trace.h"
 #include "video_core/native_indirect_reset.h"
 #include "video_core/render_trace.h"
@@ -65,6 +62,7 @@
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/nx2_frame_limit.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -1499,6 +1497,7 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    FrameLimit::NoteDraw();
     {
         // A draw's first and count can come from memory a skipped (rejected) compute program
         // should have written. Past 16M vertices they are garbage: building the quad index
@@ -3061,6 +3060,28 @@ void RasterizerVulkan::WaitForIdle() {
 
     if (device.IsMoltenVK() && scheduler.IsRenderPassActive()) {
         scheduler.DeferFragmentBarrier();
+        fence_manager.SignalOrdering();
+        return;
+    }
+    // Measured at 1440p: recording the barrier inside the pass removes 8-10 of the frame's ~150
+    // pass ends (155-185 -> 145-170), but the GPU time goes *up*, 43-51 ms to 50-57 ms. A mid-pass
+    // barrier with full memory access and ALL_COMMANDS makes Intel's driver flush the render-target
+    // tiles anyway, so the store and reload are paid without a break, and the deferred clears that
+    // a break would have realized are lost. Ending the pass stays the default; the present blit
+    // closes the pass itself (BlitScreen::DrawToFrame), so EDEN_NX2_WFI_KEEP_PASS=1 is safe to try
+    // again with a narrower barrier.
+    static const bool keep_pass = [] {
+        const char* value = std::getenv("EDEN_NX2_WFI_KEEP_PASS");
+        return value != nullptr && *value != '\0' && *value != '0';
+    }();
+    if (keep_pass && scheduler.IsRenderPassActive()) {
+        static constexpr VkMemoryBarrier WFI_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        scheduler.RecordMemoryBarrier(flags, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, WFI_BARRIER);
         fence_manager.SignalOrdering();
         return;
     }

@@ -4,9 +4,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstdlib>
+#include <vector>
 
 #include "common/dkb_cpu_trace.h"
 #include "common/fiber.h"
+#include "common/core_pinning.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/settings.h"
@@ -181,32 +184,27 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     Common::SetCurrentThreadName(name.c_str());
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
 
-    // Détection et sélection des cœurs
-    const Common::WindowsCpuSets& sets = Common::CpuSets();
-    
-    // Lire la configuration des cœurs depuis l'environnement
-    static const char* core_mask_env = std::getenv("EDEN_NX2_CORE_MASK");
-    
-    std::vector<ULONG> affinity_cpus;
-    if (core_mask_env && core_mask_env[0] != '\0') {
-        // Parser la chaîne de masque de cœurs (ex: "0-3,4-11")
-        ParseCoreMask(core_mask_env, affinity_cpus);
-    } else {
-        // Comportement par défaut : utiliser P-cœurs uniquement
-        Common::SetCurrentThreadToPerformanceCores();
-        return;
-    }
-
-    // Définir l'affinité
-    if (!affinity_cpus.empty()) {
-        Common::SelectCurrentThreadCpuSets(affinity_cpus);
-    } else {
-        Common::SetCurrentThreadToPerformanceCores();
-    }
-
+    Common::SetCurrentThreadToPerformanceCores();
     if (Settings::values.pin_gpu_threads.GetValue()) {
         Common::PinCurrentThread(Common::PinnedRole::GuestCore);
     }
+#ifdef _WIN32
+    static const std::vector<u32> affinity_cpus = [] {
+        const char* mask = std::getenv("EDEN_NX2_CORE_MASK");
+        if (mask == nullptr || *mask == '\0') {
+            return std::vector<u32>{};
+        }
+        std::vector<u32> ids = Common::ParseCpuList(mask);
+        if (ids.empty()) {
+            LOG_WARNING(Core, "Ignoring invalid EDEN_NX2_CORE_MASK value '{}'", mask);
+        }
+        return ids;
+    }();
+    if (!affinity_cpus.empty()) {
+        // The explicit mask takes precedence over automatic guest-core pinning.
+        Common::SelectCurrentThreadCpuSetIds(affinity_cpus);
+    }
+#endif
     auto& data = core_data[core];
     data.host_context = Common::Fiber::ThreadToFiber();
 
@@ -231,30 +229,4 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
 
     Common::Fiber::YieldTo(data.host_context, *thread->GetHostContext());
 }
-
-// Fonction helper pour parser le masque de cœurs
-void CpuManager::ParseCoreMask(const char* mask, std::vector<ULONG>& cpus) {
-    // Format: "0-3,4-11" (plages) ou "0,1,2,3" (liste simple)
-    char buffer[256];
-    strncpy(buffer, mask, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    
-    char* token = strtok(buffer, ",");
-    while (token != nullptr) {
-        // Vérifier si c'est une plage (ex: "0-3")
-        char* dash = strchr(token, '-');
-        if (dash != nullptr) {
-            *dash = '\0';
-            unsigned int start = atoi(token);
-            unsigned int end = atoi(dash + 1);
-            for (unsigned int i = start; i <= end; i++) {
-                cpus.push_back(i);
-            }
-        } else {
-            // Liste simple (ex: "0,1,2")
-            unsigned int val = atoi(token);
-            cpus.push_back(val);
-        }
-        token = strtok(nullptr, ",");
-    }
-}
+} // namespace Core
