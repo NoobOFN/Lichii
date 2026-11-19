@@ -1847,6 +1847,7 @@ void RasterizerVulkan::TrackOotTonemappedImage(const GraphicsPipeline& pipeline)
     if (target.Address() == 0) {
         return;
     }
+    FrameLimit::NoteSceneSize(target.width, target.height);
     std::scoped_lock lock{oot_network_bypass.mutex};
     if (oot_network_bypass.tonemapped.Address() != target.Address()) {
         LOG_INFO(Render_Vulkan, "Ocarina of Time: tonemapped image at {:#x} {}x{}", target.Address(),
@@ -3063,13 +3064,10 @@ void RasterizerVulkan::WaitForIdle() {
         fence_manager.SignalOrdering();
         return;
     }
-    // Measured at 1440p: recording the barrier inside the pass removes 8-10 of the frame's ~150
-    // pass ends (155-185 -> 145-170), but the GPU time goes *up*, 43-51 ms to 50-57 ms. A mid-pass
-    // barrier with full memory access and ALL_COMMANDS makes Intel's driver flush the render-target
-    // tiles anyway, so the store and reload are paid without a break, and the deferred clears that
-    // a break would have realized are lost. Ending the pass stays the default; the present blit
-    // closes the pass itself (BlitScreen::DrawToFrame), so EDEN_NX2_WFI_KEEP_PASS=1 is safe to try
-    // again with a narrower barrier.
+    // EDEN_NX2_WFI_KEEP_PASS=1 records the barrier inside the active render pass instead of ending
+    // it. In Ocarina of Time that removes about 10 of ~150 pass ends a frame; its effect on GPU time
+    // is not measured yet (docs/intel-xe3/gpu-latency.md), so ending the pass stays the default.
+    // The present blit ends the pass itself (BlitScreen::DrawToFrame).
     static const bool keep_pass = [] {
         const char* value = std::getenv("EDEN_NX2_WFI_KEEP_PASS");
         return value != nullptr && *value != '\0' && *value != '0';

@@ -116,11 +116,15 @@ render passes a frame and ~23 ms here, in line with the 34 602 broken reusable d
 setting exists for: the caches re-synchronise and upload per draw, and a copy or an upload has to
 leave the pass, which ends it. **Keep `EDEN_NX2_DELTA_CB=1`.**
 
-That comparison also prices a render pass break at this size: 100 more breaks cost 12-23 ms, so
-**~0.15-0.25 ms each**, and 150 of them are 22-37 ms of C's 36-46 ms frame. A full store and reload of
-colour plus depth at 2560x1440 is 59 MiB (14.75 MiB each, RGBA8 and D32), and on a tiled GPU every break
-writes its tiles out and reads them back through the same LPDDR5X the 16 CPU cores use. That is the
-frame, and it is why the CPU being idle 4-8 ms a frame changes nothing.
+**The GPU times in this table are not a fixed workload.** With the "Max Resolution (built-in)" add-on
+off (it is off on this install: `Skipping "Max Resolution (built-in)": disabled in Add-Ons`), Ocarina
+of Time runs its own dynamic resolution: the scene target moved between 864x480 and 1440x810 inside
+single runs. The game changes the pixel count to hold its GPU time, so `GPU busy` is partly an output
+of that controller, and none of these runs recorded the scene size per window. The pass and draw
+counts do not depend on it and stand. What does not stand is any price per render pass derived from
+these GPU times (an earlier version of this page gave 0.15-0.25 ms a break): it is unmeasured. The
+report now prints the scene size (`game renders 2560x1440, scene 1120x630 to 1440x810`); compare GPU
+times only between windows that show the same scene size, or with the add-on on.
 
 B against C is the OoT anti-aliasing bypass, at the same pass count: "No sharpening" with
 `EDEN_NX2_OOT_SKIP_HEAVY=1` is worth the other 5-10 ms. So the bypass never added passes; the
@@ -129,9 +133,8 @@ earlier suspicion that it did came from comparing it with a `DELTA_CB=0` run.
 **Run to run, the same settings vary by 15 %.** D and E are C's configuration as far as the frame is
 concerned (the same ~150 render passes and ~2.7 k draws a frame), and their GPU busy p50 spans 36.3 to
 45.7 ms, the fastest and the slowest both being a run where nothing was changed. The pass count
-repeats; the GPU time follows the scene (the same draw count can carry different overdraw and
-particles) and the device's power and clock state - `force_max_clock` starts a turbo compute loop
-(`vk_turbo_mode.cpp`) that holds the clocks up, but it cannot hold a shared package power budget.
+repeats; the GPU time does not. The game's dynamic resolution (above) is the first suspect and was not
+recorded in those runs; overdraw and the package's power state are others, none of them separated.
 Read a difference under ~20 % as noise, confirm a change on `render passes a frame` first, and compare
 whole-window ranges rather than single seconds.
 
@@ -206,10 +209,12 @@ actually needs the copy - a lazy pass end - not a cheaper barrier.
 | time outside the GPU | 8.6-19.9 ms | 4.3-13.3 ms |
 | fps | 13.0-18.0 | 14.2-17.8 |
 
-Fewer passes, more GPU time: the break was never the expensive half on Intel. The run that kept the
-pass open carried no GPU profile while the one that broke it did (the profile only *adds* cost), so the
-higher GPU time is not a profile artefact. `EDEN_NX2_WFI_KEEP_PASS` is opt-in again, and the present
-blit keeps closing the pass.
+**Not conclusive.** Only the pass count is a result: about 10 fewer a frame with the barrier inside the
+pass. The GPU times cannot be compared: the scene size moved between 864x480 and 1440x810 in both
+runs, neither run had the GPU profile on, and which log had the switch set rests on how the two files
+were labelled, since the logs do not print the switches. Whether a mid-pass barrier costs more than a
+pass break on this driver is open. `EDEN_NX2_WFI_KEEP_PASS` is opt-in until an A/B at a fixed scene
+size says otherwise; the present blit closes the pass either way.
 
 ### `EDEN_NX2_FLUSH_DRAWS` measured (128 against 512)
 
@@ -231,16 +236,11 @@ idles 15 ms a frame instead of 8. **Keep 128.**
 
 Audited after the runs and the profile above, with the code in hand:
 
-1. **Keeping the pass open across `WaitForIdle` does not pay on this GPU.** Recording the barrier
-   inside the pass (the naive form of a lazy pass end) removes 8-10 of the frame's ~150 breaks - 155-185
-   down to 145-170 a frame - but GPU busy *rises*, from 43-51 ms to 50-57 ms, so the frame gets slower.
-   A mid-pass barrier with `ALL_COMMANDS` and full memory access makes Intel's driver flush the
-   render-target tiles anyway: the store and reload are paid without a break, and the deferred clears a
-   break would have realized are lost. The barrier stayed a break and `EDEN_NX2_WFI_KEEP_PASS=1` is
-   opt-in again; `BlitScreen::DrawToFrame` keeps closing the pass first, so a narrower barrier (graphics
-   and compute stages, attachment and shader access only) can be tried inside a pass safely. That
-   measurement also corrects the estimate below the table above: a break is not 0.15-0.25 ms on its own,
-   it is cheaper than the tile flush a mid-pass barrier forces.
+1. **Keeping the pass open across `WaitForIdle` is untested in effect.** Recording the barrier inside
+   the pass removes about 10 of the frame's ~150 breaks; what that does to the GPU time is unknown (see
+   the table above). `EDEN_NX2_WFI_KEEP_PASS=1` stays opt-in and `BlitScreen::DrawToFrame` closes the
+   pass first, so it is safe to A/B again at a fixed scene size, also with a narrower barrier (graphics
+   and compute stages, attachment and shader access only).
 2. **The two remaining transfer sites** (20 a frame at `vk_query_cache.cpp:1715`, 18 at
    `vk_buffer_cache.cpp:641`) still have to break the pass: a `vkCmdCopyBuffer`/`vkCmdCopyQueryPoolResults`
    may not run inside one, and both copies have to land before the next command that reads what they

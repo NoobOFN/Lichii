@@ -60,6 +60,11 @@ struct State {
     u32 height{};
     u32 guest_width{};
     u32 guest_height{};
+    /// The smallest and largest scene size of the window, by area (0 until one is noted).
+    u32 scene_min_width{};
+    u32 scene_min_height{};
+    u32 scene_max_width{};
+    u32 scene_max_height{};
 };
 
 State& Data() {
@@ -167,14 +172,25 @@ void Report(State& state, Clock::time_point now) {
     } else if (image_wait_avg >= busy_p50 * 0.5) {
         verdict = "present: the swapchain holds frames back";
     }
+    std::string scene;
+    if (state.scene_max_width != 0) {
+        scene = fmt::format(", scene {}x{}", state.scene_min_width, state.scene_min_height);
+        if (state.scene_min_width != state.scene_max_width ||
+            state.scene_min_height != state.scene_max_height) {
+            scene += fmt::format(" to {}x{}", state.scene_max_width, state.scene_max_height);
+        }
+    }
+    state.scene_min_width = state.scene_min_height = 0;
+    state.scene_max_width = state.scene_max_height = 0;
     LOG_INFO(Render_Vulkan,
-             "Nx2FrameLimit {:.1f} s: {:.1f} fps of {}x{} (game renders {}x{}); interval p50 "
+             "Nx2FrameLimit {:.1f} s: {:.1f} fps of {}x{} (game renders {}x{}{}); interval p50 "
              "{:.2f} p95 {:.2f} p99 {:.2f} max {:.2f} ms; GPU busy p50 {:.2f} p95 {:.2f} ms = "
              "{:.0f}% of the interval ({:.2f} ms a frame outside it); present image wait {:.2f} ms "
              "and call {:.2f} ms a frame; {:.1f} submissions, {:.0f} draws and {:.0f} render "
              "passes a frame; {}",
              seconds, frame_count / seconds, state.width, state.height, state.guest_width,
-             state.guest_height, interval_p50, interval_p95, interval_p99, interval_max, busy_p50,
+             state.guest_height, scene, interval_p50, interval_p95, interval_p99, interval_max,
+             busy_p50,
              busy_p95, busy_share, other_ms, image_wait_avg, present_avg,
              static_cast<double>(submissions) / frame_count,
              static_cast<double>(draws) / frame_count,
@@ -242,6 +258,24 @@ void NoteGuestSize(u32 width, u32 height) {
     std::scoped_lock lock{state.mutex};
     state.guest_width = width;
     state.guest_height = height;
+}
+
+void NoteSceneSize(u32 width, u32 height) {
+    if (!Enabled() || width == 0 || height == 0) {
+        return;
+    }
+    State& state = Data();
+    std::scoped_lock lock{state.mutex};
+    const u64 area = u64{width} * height;
+    if (state.scene_max_width == 0 ||
+        area < u64{state.scene_min_width} * state.scene_min_height) {
+        state.scene_min_width = width;
+        state.scene_min_height = height;
+    }
+    if (area > u64{state.scene_max_width} * state.scene_max_height) {
+        state.scene_max_width = width;
+        state.scene_max_height = height;
+    }
 }
 
 void NotePresent(std::optional<double> gpu_busy_ms, double image_wait_ms, double present_ms,

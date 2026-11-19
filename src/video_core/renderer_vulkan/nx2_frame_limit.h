@@ -36,4 +36,9 @@ void NotePresent(std::optional<double> gpu_busy_ms, double image_wait_ms, double
 /// The size the game renders at, before the window upscale.
 void NoteGuestSize(u32 width, u32 height);
 
+/// The size of the scene's own render target this frame, where a title reports it. A game with
+/// dynamic resolution changes it to hold its GPU time, so GPU times are only comparable between
+/// windows that show the same scene size.
+void NoteSceneSize(u32 width, u32 height);
+
 } // namespace Vulkan::FrameLimit
