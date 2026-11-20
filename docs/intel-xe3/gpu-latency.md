@@ -171,8 +171,35 @@ its front and back threads at 42 % and 58 % of a core - no stage is saturated, y
 the fence of the work it queued (double or triple buffering).
 
 That is a latency chain, not a throughput limit, and it is why 2.7 ms of GPU time became idle instead
-of frames. The next experiment tests the largest single handoff in that chain: `EDEN_NX2_SPLIT=0`
+of frames. The next experiment tested the largest single handoff in that chain: `EDEN_NX2_SPLIT=0`
 runs the GPU engines on one thread instead of the front/back pair, at the same spot and scene size.
+
+## The GPU threads are the saturated stage
+
+`EDEN_NX2_SPLIT=0`, same spot, same scene: **16.5-17.6 fps** against 21.1-21.6, `GPU busy p50` 45-46.3 ms
+against 37.5-39.2, and the guest's sync wait grew from 27.58 to 39.55 ms. The split pays for itself;
+what it costs is not the problem, and the switch is gone from `nx2_switches.txt`.
+
+What the profile shows instead, per second of wall time:
+
+| | GPU front | GPU back |
+|---|---|---|
+| host CPU busy | 418 ms | 579 ms |
+| waiting on the other one | `acquire` 219 + `list writers` 173 | `split wait` 428 |
+| total | ~1000 ms | ~1007 ms |
+
+Both GPU threads are at 100 % of their own timeline: they are either working or waiting on each other,
+while the device is 82 % busy. So the stage that sets the frame is the GPU *emulation* CPU plus the
+coherence serialization between its two halves, not the device. That matters because, unlike device
+time, CPU saved here converts to frames: the earlier 2.7 ms of device time became idle, but 2.7 ms
+taken off the back thread's 579 ms/s is on the critical path.
+
+The back thread's work, largest first (ms per second): method dispatch 139.5 (2.98 M methods/s), bind
+stage buffers 66.5 (122 418 calls, 0.54 us each), draw 40.4, update buffers 32.5, compute 31.9, read
+handles 30.9, configure 29.8, fill image views 13.4, push descriptors 12.4, dynamic state 11.9.
+
+Next: `Renderer.pin_gpu_threads` (off until now) gives the front and the back a physical performance
+core each and keeps the guest cores off them, which two threads at 100 % should feel.
 
 ## Comparing two runs
 
