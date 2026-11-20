@@ -201,6 +201,23 @@ handles 30.9, configure 29.8, fill image views 13.4, push descriptors 12.4, dyna
 Next: `Renderer.pin_gpu_threads` (off until now) gives the front and the back a physical performance
 core each and keeps the guest cores off them, which two threads at 100 % should feel.
 
+Measured, same spot and scene, warm-up windows dropped, 36 windows without pinning against 31 with:
+
+| | pinned off | pinned on |
+|---|---|---|
+| fps median (min-max) | 20.8 (19.5-21.8) | **21.4 (20.3-22.0)** |
+| fps mean | 20.84 | 21.36 |
+| `GPU busy p50` median | 37.76 ms | 37.64 ms |
+| time outside the GPU | 9.46 ms | **8.75 ms** |
+
+The device does the same work; what falls is the time outside it, by 0.7 ms a frame, which is what
+handing each GPU thread its own core should do. That is the first change in this file that moved the
+frame rate without touching the device, and it is worth about 3 %.
+
+It is still two sessions rather than one A/B (the setting is read at startup, so a toggle needs a
+restart), so it needs one run with the setting back at `false` to show the number returns to 20.8
+before it counts as proven.
+
 ## Comparing two runs
 
 The line carries the window (swapchain) size and, in brackets, the size the game renders, because
