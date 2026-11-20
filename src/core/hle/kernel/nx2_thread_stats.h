@@ -19,11 +19,10 @@ class KThread;
 // (CoreTiming::GetClockTicks) until the report converts them.
 namespace Kernel::Nx2ThreadStats {
 
-/// Whether the counters and the report are on. A switch set only in nx2_switches.txt arrives after
-/// static initialization, so this reads the variable once more in ReadSwitch(), like the GPU profile.
 inline bool g_enabled = std::getenv("EDEN_NX2_GUEST_THREAD_STATS") != nullptr;
 
-/// Called by Core::System::Initialize, once the frontend has applied its switch files.
+/// Called before the kernel starts: static initialization runs before the frontend loads
+/// nx2_switches.txt, so a switch set only there takes effect from that point on.
 inline void ReadSwitch() {
     g_enabled = std::getenv("EDEN_NX2_GUEST_THREAD_STATS") != nullptr;
 }
@@ -116,9 +115,10 @@ inline void BeginRun() {
 
 /// The Run() of `thread` on `core` from `start` to `end` returned for `exit` (`svc` when it
 /// is an SVC). The core's JIT totals so far: C++ block lookups, blocks compiled, full code cache
-/// clears.
+/// clears, handled fastmem faults and invalidation requests.
 void EndRun(KThread* thread, size_t core, u64 start, u64 end, Exit exit, u32 svc,
-            u64 block_lookups, u64 blocks_compiled, u64 cache_clears);
+            u64 block_lookups, u64 blocks_compiled, u64 cache_clears, u64 fastmem_faults,
+            u64 fastmem_recompiles);
 
 /// KScheduler::SwitchThread: `from` ran `from_ticks` on its core until `now`.
 void OnSwitch(KThread* from, KThread* to, s64 now, s64 from_ticks);

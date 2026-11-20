@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -521,6 +522,7 @@ TEST_CASE("Fast draw keeps base vertex and instance as draw parameters", "[fast_
             f.Reg(MAXWELL3D_REG_INDEX(global_base_vertex_index)) + 64);
     f.Write(MAXWELL3D_REG_INDEX(global_base_instance_index),
             f.Reg(MAXWELL3D_REG_INDEX(global_base_instance_index)) + 1);
+    f.Write(MAXWELL3D_REG_INDEX(vertex_id_base), f.Reg(MAXWELL3D_REG_INDEX(vertex_id_base)) + 64);
     f.DrawArrays(0, 3);
     CHECK(f.Reusable());
 }
@@ -620,6 +622,29 @@ TEST_CASE("Fast draw breaks skip the add only on the drawing thread, after its f
     CHECK(current() == again + 1);
 }
 
+TEST_CASE("Syncs skip the add only on the thread that reads the sync serial, after its first",
+          "[fast_draw]") {
+    const auto current = [] { return FastDraw::g_sync_serial.load(std::memory_order_relaxed); };
+    const u64 read = FastDraw::SyncSerial();
+    FastDraw::Break(FastDraw::Reason::OtherEngine);
+    CHECK(current() == read + 1);
+    // More syncs before the next read change nothing the reader compares.
+    FastDraw::Break(FastDraw::Reason::OtherEngine);
+    FastDraw::NoteSync();
+    CHECK(current() == read + 1);
+    // A thread that never reads it (the front's puller) bumps every time.
+    std::thread other{[] {
+        FastDraw::NoteSync();
+        FastDraw::NoteSync();
+    }};
+    other.join();
+    CHECK(current() == read + 3);
+    const u64 again = FastDraw::SyncSerial();
+    CHECK(again == read + 3);
+    FastDraw::NoteSync();
+    CHECK(current() == again + 1);
+}
+
 TEST_CASE("Unsplit callbacks end draw reuse before they execute", "[fast_draw][unsplit_fast_draw]") {
     const bool previous_reads_serial = FastDraw::t_reads_serial;
     const bool previous_serial_bumped = FastDraw::t_serial_bumped;
@@ -628,7 +653,8 @@ TEST_CASE("Unsplit callbacks end draw reuse before they execute", "[fast_draw][u
         FastDraw::t_serial_bumped = previous_serial_bumped;
     };
     FastDrawFixture f;
-    VideoCommon::GpuSplit split;
+    const auto split_owner = std::make_unique<VideoCommon::GpuSplit>(); // Too big for the stack
+    VideoCommon::GpuSplit& split = *split_owner;
     REQUIRE_FALSE(split.Active());
     f.DrawArrays(0, 3);
     const u64 before = f.rasterizer.draws.back();
