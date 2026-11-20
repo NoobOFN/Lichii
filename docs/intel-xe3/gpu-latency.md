@@ -145,6 +145,35 @@ turning into idle, so the next questions are about that chain, not about the GPU
 Whether the GPU becomes the limit again depends on the scene size: the game picks it, and at 2560x1440
 the GPU work above would dominate again.
 
+## The guest threads are not over the frame budget either
+
+`EDEN_NX2_GUEST_THREAD_STATS=1` never reported before this session: its flag was an `inline const
+bool` read during static initialization, before the frontend applies `nx2_switches.txt`, so a switch
+set only in the file was read as unset. `Nx2Profile` has `ReadSwitch()` for exactly that reason; the
+thread stats now do too, called from `Core::System::Initialize`.
+
+First reading, Ocarina of Time, Kokiri Forest, scene 1440x810, 217 presents in 10 s, ms per frame:
+
+| thread | on core | of it JIT | cached memory | waiting | biggest wait |
+|---|---|---|---|---|---|
+| t88 (busiest) | 6.52 | 5.95 (game 4.01) | 1.92 in 5 430 calls, 1.07 read-back | 39.25 | sync objects 27.58 in 3 waits |
+| t155 | 6.29 | 5.81 (game 3.96) | 1.83 in 3 739 | 39.46 | address 37.64 in 24 |
+| t156-t159 | 5.3-5.7 | 4.9-5.3 | 1.8-2.1 | 40.0-40.4 | address 37.6-38.6 |
+| t95 (presents 1 a frame) | 0.89 | 0.50 | - | 44.54 | sleep 26.79 in 20 |
+
+Per core: JIT 8.4-10.6 ms a frame, 7 400-10 300 JIT exits a second, all but a few hundred of them SVC,
+counter polling and hint spins at zero.
+
+So the heaviest guest thread works 6.5 ms of a 47 ms frame and the presenting thread under 1 ms:
+nothing in the guest is near the 16.7 ms budget. Combined with the A/B above - the GPU at 82-85 % and
+its front and back threads at 42 % and 58 % of a core - no stage is saturated, yet the frame takes
+47 ms. What the guest does spend its wait on is GPU synchronisation: 27.58 ms in three waits, which is
+the fence of the work it queued (double or triple buffering).
+
+That is a latency chain, not a throughput limit, and it is why 2.7 ms of GPU time became idle instead
+of frames. The next experiment tests the largest single handoff in that chain: `EDEN_NX2_SPLIT=0`
+runs the GPU engines on one thread instead of the front/back pair, at the same spot and scene size.
+
 ## Comparing two runs
 
 The line carries the window (swapchain) size and, in brackets, the size the game renders, because
