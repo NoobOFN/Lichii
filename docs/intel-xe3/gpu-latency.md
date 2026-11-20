@@ -102,18 +102,18 @@ One compute dispatch of a 4x4x6 grid also costs 1.5-2.1 ms, which is a serial lo
 copy asked for `VK_QUERY_RESULT_WAIT_BIT` over the whole range. The AMD path already knows why that
 is wrong there - "AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query,
 ~5 ms a frame in Ocarina)" - and waits on the newest query only, then copies the rest unwaited.
-`EDEN_NX2_QUERY_WAIT_LAST=1` applies that to every driver. Intel pays the same per-query wait: 220 us
-a copy for ~70 slots, 3.1 us each.
+Intel pays the same per-query wait - 220 us a copy for ~70 slots, 3.1 us each - so the same
+wait-on-the-newest copy now runs there too.
 
 The GPU time it saves is real. In the runs with the frame trace on, the copy site fell from 3.4-4.3 ms
 a frame (17-19 calls) to 2.7-2.8 ms (17-18), and in a same-session A/B without the trace, 44 windows
 each at scene 1440x810, `GPU busy p50` went from **40.49 ms to 37.79 ms**.
 
-**It does not raise the frame rate.** The same A/B: 21.0 fps median without the switch against 20.8
-with it, and the time outside the GPU went from 7.1 to 10.3 ms a frame. The 2.7 ms become idle, which
-means the frame period at ~21 fps is not GPU-bound: whatever limits it takes the same time either way.
-At 84 % GPU the device was the main limit in the trace runs; once the GPU drops to 79 % the chain
-outside it becomes the limit instead.
+**It does not raise the frame rate.** The same A/B, whole-range wait against wait-on-the-newest: 21.0
+fps median for the former and 20.8 for the latter, with the time outside the GPU going from 7.1 to
+10.3 ms a frame. The 2.7 ms become idle, which means the frame period at ~21 fps is not GPU-bound:
+whatever limits it takes the same time either way. At 84 % GPU the device was the main limit in the
+trace runs; once the GPU drops to 79 % the chain outside it becomes the limit instead.
 
 An earlier comparison of two different sessions (GPU busy 50.8-51.7 -> 42.0-44.1, fps 16.2-18.3 ->
 18.8-19.9) claimed 7.7 ms and up to 2 fps from this. That comparison was between two sessions and is
@@ -123,8 +123,8 @@ The remaining 2.7 ms is not overhead either: the copy reads the newest query, so
 it, and the guest asks for results 17-18 times a frame. Waiting later is not an option
 (`vkGetQueryPoolResults` would add a host read without removing the copy, see below).
 
-The switch stays off by default in `nx2_switches.txt`. The 2.7 ms are headroom worth having once the
-chain outside the GPU stops being the limit; nothing here shows a frame-rate gain to merge on.
+It ships for AMD and Intel unconditionally (both are the drivers where the per-query wait was
+measured); other vendors keep the whole-range wait.
 
 ## The limiter is no longer the GPU
 
