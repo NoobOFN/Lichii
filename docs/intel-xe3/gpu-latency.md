@@ -102,29 +102,48 @@ One compute dispatch of a 4x4x6 grid also costs 1.5-2.1 ms, which is a serial lo
 copy asked for `VK_QUERY_RESULT_WAIT_BIT` over the whole range. The AMD path already knows why that
 is wrong there - "AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query,
 ~5 ms a frame in Ocarina)" - and waits on the newest query only, then copies the rest unwaited.
-`EDEN_NX2_QUERY_WAIT_LAST=1` applies that to every driver.
+`EDEN_NX2_QUERY_WAIT_LAST=1` applies that to every driver. Intel pays the same per-query wait: 220 us
+a copy for ~70 slots, 3.1 us each.
 
-Intel pays the same per-query wait: 220 us a copy for ~70 slots, 3.1 us each. Both runs with the
-frame trace on, same scene size:
+The GPU time it saves is real. In the runs with the frame trace on, the copy site fell from 3.4-4.3 ms
+a frame (17-19 calls) to 2.7-2.8 ms (17-18), and in a same-session A/B without the trace, 44 windows
+each at scene 1440x810, `GPU busy p50` went from **40.49 ms to 37.79 ms**.
 
-| | before | `EDEN_NX2_QUERY_WAIT_LAST=1` |
-|---|---|---|
-| the copy site | 3.4 - 4.3 ms, 17-19 calls | 2.7 - 2.8 ms, 17-18 calls |
-| draws | 18.6 - 20.1 ms | 16.9 - 18.2 ms |
-| compute | 8.9 - 10.6 ms | 8.2 - 8.5 ms |
-| GPU busy | 50.8 - 51.7 ms | 42.0 - 44.1 ms |
-| fps | 16.2 - 18.3 | 18.8 - 19.9 |
+**It does not raise the frame rate.** The same A/B: 21.0 fps median without the switch against 20.8
+with it, and the time outside the GPU went from 7.1 to 10.3 ms a frame. The 2.7 ms become idle, which
+means the frame period at ~21 fps is not GPU-bound: whatever limits it takes the same time either way.
+At 84 % GPU the device was the main limit in the trace runs; once the GPU drops to 79 % the chain
+outside it becomes the limit instead.
 
-The site explains 1.3 ms of the 7.7: every other site falls too, which is what a drain removed looks
-like - each per-query wait forced the GPU to reach the query behind it before the copy could start,
-serialising the frame. The player saw no occlusion glitches (missing or flickering objects).
+An earlier comparison of two different sessions (GPU busy 50.8-51.7 -> 42.0-44.1, fps 16.2-18.3 ->
+18.8-19.9) claimed 7.7 ms and up to 2 fps from this. That comparison was between two sessions and is
+withdrawn: the numbers above are the same-session A/B and they settle it.
 
-The remaining 2.7 ms is not overhead: the copy reads the newest query, so the GPU has to reach it, and
-the guest asks for results 17-18 times a frame. Waiting later is not an option (`vkGetQueryPoolResults`
-would add a host read without removing the copy, see below).
+The remaining 2.7 ms is not overhead either: the copy reads the newest query, so the GPU has to reach
+it, and the guest asks for results 17-18 times a frame. Waiting later is not an option
+(`vkGetQueryPoolResults` would add a host read without removing the copy, see below).
 
-The 7.7 ms was measured across two sessions, so a same-session A/B without the trace is what settles
-it; the switch is not merged until that runs.
+The switch stays off by default in `nx2_switches.txt`. The 2.7 ms are headroom worth having once the
+chain outside the GPU stops being the limit; nothing here shows a frame-rate gain to merge on.
+
+## The limiter is no longer the GPU
+
+The A/B above is the first measurement in this file where the GPU time drops and the frame rate does
+not follow. At ~21 fps with scene 1440x810 and `GPU busy p50` at 37.8-40.5 ms of a 47.6-48.1 ms frame,
+the GPU is 79-85 % busy and the rest of the chain sets the period. Cutting GPU work further will keep
+turning into idle, so the next questions are about that chain, not about the GPU:
+
+- `EDEN_NX2_GUEST_THREAD_STATS=1`, once every 10 s: which guest thread sits on a core and for how long,
+  split into JIT (game code, counter polling, hint spin, cached memory) and outside it (SVCs and
+  kernel), plus its waits by kind. That answers whether the game's main thread is over the frame budget.
+- The `Front waits for the back in 10 s by site` line at `HW_GPU:Info`: `acquire 2345.0 ms` and
+  `list writers 1865.3 ms` per 10 s in these runs are 23 % and 19 % of the wall time, which is the
+  front stalling on the split.
+- `EDEN_NX2_PRESENT_FENCE_TRACE=1` and the `Async read-back per second` line, for the present path and
+  the guest reads of GPU-written memory.
+
+Whether the GPU becomes the limit again depends on the scene size: the game picks it, and at 2560x1440
+the GPU work above would dominate again.
 
 ## Comparing two runs
 
