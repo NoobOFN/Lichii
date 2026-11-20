@@ -51,6 +51,7 @@
 #include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/k_system_control.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/nx2_thread_stats.h"
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
@@ -221,6 +222,9 @@ struct System::Impl {
     u64 program_id;
 
     bool Initialize(System& system) {
+        // The frontend applies nx2_switches.txt after static initialization, so the guest thread
+        // stats' flag has to be read here rather than at load time.
+        Kernel::Nx2ThreadStats::ReadSwitch();
         try {
             device_memory.emplace();
         } catch (const std::bad_alloc&) {
