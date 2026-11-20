@@ -17,6 +17,12 @@ EDEN_NX2_SPLIT=2
 # Batch GPU fence syncpoints to reduce host driver overhead and smooth frametimes.
 EDEN_NX2_FENCE_BATCH=1
 
+# Keep draws on the reusable fast path across SET_CONSTANT_BUFFER_SELECTOR (0x446). Without it
+# Ocarina of Time sent ~89% of its draws back to the full path, which ended ~100 more render passes
+# a frame at 1x (254 against 150) and cost ~14 ms of GPU time: ~4 fps on Xe3.
+# EDEN_NX2_FAST_DRAW_VERIFY=1 checks the delta draws against the full path.
+EDEN_NX2_DELTA_CB=1
+
 # Leave buffer downloads disabled on Switch 2 (default): forcing downloads (=1) copies back
 # 90-220 MB/s of buffers CPU never touches, causing heavy mutex contention and dropping FPS by ~38-63%.
 #EDEN_NX2_BUFFER_DOWNLOADS=1
