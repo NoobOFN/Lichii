@@ -377,7 +377,7 @@ Audited after the runs and the profile above, with the code in hand:
 3. **Query values: a host read does not remove the copy.** `PresyncWrites` copies the pool into a
    resolve buffer, and `SyncValues` then copies that buffer into guest memory, which is where the game
    reads its counters - so `vkGetQueryPoolResults` would add a host read without removing a command.
-   Its per-query wait was the exception and is fixed (`EDEN_NX2_QUERY_WAIT_LAST`, see above); the
+   Its per-query wait was the exception and is fixed (see above); the
    2.7 ms that stays is the GPU reaching the newest query, 17-18 times a frame.
 4. **A pending fragment barrier** (`vk_graphics_pipeline.cpp:1255`) ends the pass; it is the feedback
    loop path, 5 a frame.
