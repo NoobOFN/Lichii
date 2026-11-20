@@ -122,6 +122,7 @@ machine without asking.
 | Add-on "Max Resolution (built-in)" | Off | About 2 FPS (20 to 22) on the 140V |
 | Frame generation | Off, or Optical Flow if you stay above 20 FPS | See below |
 | Console mode | Handheld | |
+| Pin GPU threads to performance cores | On | Fps median 20.8 to 21.4 on the 386H: the GPU front and back each get a physical core and the guest cores keep off those two |
 
 `nx2_switches.txt`, beside the executable:
 
@@ -203,6 +204,54 @@ Time dispatches whose result the anti-aliasing bypass never reads (`EDEN_NX2_OOT
 real GPU busy time (queue timestamps, not Task Manager's number), the frame interval percentiles,
 the present waits and the submissions, draws and render passes per frame, with a verdict: the
 device, the swapchain, or the emulation threads leaving the GPU idle.
+
+## What this branch measured
+
+Ocarina of Time, 1x, handheld, scene 1440x810 on the Core Ultra 9 386H, unless a row says otherwise.
+`gpu-latency.md` has the runs behind every number.
+
+Kept, because each one moved a measurement in the right direction:
+
+| Change | Measured |
+|---|---|
+| `EDEN_NX2_DELTA_CB=1` | ~4 fps. Keeps ~89 % of Ocarina's draws on the reusable path: 254 render passes a frame against 150, ~14 ms of GPU time |
+| Occlusion query copies wait on the newest query, AMD and now Intel | Copy site 3.4-4.3 to 2.7-2.8 ms a frame, `GPU busy p50` 40.49 to 37.79 ms, no occlusion glitches. Fps unchanged at this scene size: the time becomes idle |
+| `Renderer.pin_gpu_threads=true` | Fps median 20.8 to 21.4 (means 20.84 to 21.36) with `GPU busy p50` unchanged at 37.7 ms and the time outside the GPU 9.46 to 8.75 ms |
+| Fast-draw port from upstream (vertex stream stride, enable and divisor; occlusion counter resets; render enable modes) | Three illegitimate fast-draw breaks removed. No fps change on Ocarina: what is left breaks the path legitimately |
+| `EDEN_NX2_FENCE_FLUSH_US=500`, `EDEN_NX2_SPLIT=2`, `EDEN_NX2_FENCE_BATCH=1` | Submission batching and the two-thread GPU; see [Hybrid cores](hybrid-cores.md) and the SPLIT row below |
+
+Measured and not kept:
+
+| Experiment | Result |
+|---|---|
+| Merging or batching draws (the plan before `DKB gpu_work_shape`) | A draw's GPU time is p50 1.0-1.5 us, p90 13.5-14.6 and p99 60-81 us over 2 800 draws: the cheap half is worth under 1.8 ms of the 19 ms, so only guest geometry and shading cost |
+| `EDEN_NX2_SPLIT=0` (GPU engines on one thread) | 16.5-17.6 fps against 21.1-21.6, `GPU busy p50` 45-46 against 37.5-39. The split pays for itself |
+| `EDEN_NX2_FLUSH_DRAWS=512` | 2 fps slower: fewer passes, but the front waits longer and the GPU idles 15 ms a frame against 8 |
+| The Ocarina anti-aliasing bypass and `EDEN_NX2_OOT_SKIP_HEAVY` | Inert in handheld: this build has no output pass for the bypass to replace, so it never completes and the network runs every frame regardless |
+| Render pass break work (`EDEN_NX2_WFI_KEEP_PASS`) | Pass begin and end together are ~2 ms of a 41 ms frame |
+| `EDEN_NX2_CORE_MASK` for the guest | Neutral at the same scene size |
+
+Diagnostics this branch added, all off unless their variable is set:
+
+- `DKB gpu_work_shape` (with `EDEN_DKB_FRAME_TRACE=1`): the GPU time of each work item by percentile,
+  for all work, graphics and compute. This is what showed the draw time is a tail, not overhead.
+- `EDEN_NX2_GUEST_THREAD_STATS=1`, fixed here: it had never reported from a switch file, because its
+  flag was read during static initialization, before `nx2_switches.txt` is applied. It now prints, every
+  10 s, each guest thread's time on a core split into JIT (game code, counter polling, spins, cached
+  memory) and kernel, its waits by kind, and each core's JIT exits.
+- The anti-aliasing bypass names each program it examines with its grid and every image handle the
+  shader reads or stores, which is how the missing output pass was found.
+- `Nx2FrameLimit` reports the scene size next to the window size, because the game's dynamic resolution
+  otherwise makes two runs incomparable.
+- `tools/windows/intel-xe3/run-clang.cmd` launches the build with the profiling switches.
+
+Two claims made earlier in this work were withdrawn after a same-session A/B: 7.7 ms and up to 2 fps
+from the query copy fix (it is 2.7 ms of GPU time and no fps), and a per-draw cost that was
+"front-end state" (it is guest geometry). Both corrections are in `gpu-latency.md`.
+
+The arithmetic that matters: at this scene size the device needs 37.6 ms a frame and 30 fps needs
+33.3 ms, while ~8.8 ms of each frame is spent outside the GPU. Reaching 30 fps needs both the device
+work and that dead time to fall.
 
 ## Known issues
 
