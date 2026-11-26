@@ -376,6 +376,22 @@ bool Maxwell3D::IsFastDrawQueryMethod(u32 method) {
     // Neither is in what a delta draw keeps: the draw manager asks ShouldExecute for every draw,
     // every draw resumes the counters and host conditional rendering (NotifySegment,
     // CounterEnable), and a resolve that leaves the render pass ends the delta chain there.
+    // SET_REPORT_SEMAPHORE_A-D: address high, address low, payload and the operation word. They
+    // feed the report ProcessQueryGet makes when the operation arrives, which runs in stream
+    // order, and nothing a delta draw compares reads them. Ocarina of Time writes them about
+    // 45 000 times a second (the operation word alone 29 000) and every write sent the next draw
+    // down the full path.
+    // EDEN_NX2_QUERY_METHODS=0 lets those four writes break the reusable draw again, for an A/B of
+    // this fix on its own.
+    static const bool query_methods = [] {
+        const char* value = std::getenv("EDEN_NX2_QUERY_METHODS");
+        return value == nullptr || std::string_view{value} != "0";
+    }();
+    constexpr u32 report_semaphore_base = MAXWELL3D_REG_INDEX(report_semaphore.address_high);
+    if (query_methods && method >= report_semaphore_base &&
+        method <= report_semaphore_base + 3) {
+        return true;
+    }
     return method == MAXWELL3D_REG_INDEX(clear_report_value) ||
            method == MAXWELL3D_REG_INDEX(render_enable.mode);
 }
