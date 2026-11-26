@@ -405,8 +405,24 @@ bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
 }
 
 bool Maxwell3D::IsFastDrawDeltaMethod(u32 method) {
+    /// SET_CONSTANT_BUFFER_SELECTOR: picks the constant buffer slot the following data fills.
+    constexpr u32 FastConstantBufferSelector = 0x446;
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
     if (method >= cb_data && method < cb_data + Regs::NumCBData) {
+        return true;
+    }
+    // The native constant-buffer binds: 0x446 selects the slot the following data writes fill, and
+    // on its own changes nothing a reusable draw compares. It broke the reusable draw 34 602 times a
+    // second in Ocarina of Time, which is ~89% of its draws going back to the full path, ending ~100
+    // more render passes a frame (254 against 150) for ~14 ms of GPU time. The delta path re-pushes
+    // the handle data and rejects a draw whose handle buffer changed, so it absorbs these.
+    // EDEN_NX2_DELTA_CB=0 sends draws after a 0x446 back down the full path again, for an A/B of
+    // this fix on its own.
+    static const bool delta_cb = [] {
+        const char* value = std::getenv("EDEN_NX2_DELTA_CB");
+        return value == nullptr || std::string_view{value} != "0";
+    }();
+    if (method == FastConstantBufferSelector && delta_cb) {
         return true;
     }
     switch (method) {
