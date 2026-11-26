@@ -26,7 +26,9 @@ constexpr u32 ProgramPayloadVersion = 1;
 } // Anonymous namespace
 
 u64 LoweringStamp() {
-    return GeneratedLoweringStamp;
+    // Lowerings that reject matrix multiplies differ from those that don't: keep their records apart.
+    constexpr u64 RejectedMatrixStamp = 0x52454a4d41545258ULL;
+    return GeneratedLoweringStamp ^ (RejectsNativeMatrix() ? RejectedMatrixStamp : 0);
 }
 
 ProgramKeyInputs MakeProgramKeyInputs(Shader::Stage stage, u32 header_size,

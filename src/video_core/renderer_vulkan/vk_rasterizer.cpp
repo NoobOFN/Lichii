@@ -39,6 +39,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/buffer_cache/indirect_buffer.h"
+#include "video_core/native_lowering.h"
 #include "video_core/native_query_trace.h"
 #include "video_core/native_indirect_reset.h"
 #include "video_core/render_trace.h"
@@ -623,6 +624,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().WatchRenderLocks({&buffer_cache.mutex, &texture_cache.mutex});
     oot_performance_scale =
         Settings::AppliedOcarinaRenderScale() == Settings::NvidiaDlssQuality::Performance;
+    VideoCommon::SetNativeMatrixRejected(!EmulatesNativeTensorPrograms());
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -5785,6 +5787,25 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
 
 bool RasterizerVulkan::UsesNvidiaDlss() const {
     return texture_cache_runtime.UsesNvidiaDlss();
+}
+
+bool RasterizerVulkan::EmulatesNativeTensorPrograms() const {
+    // EDEN_NX2_TENSOR_EMULATION=0 never emulates them, =1 always does.
+    if (const char* option = std::getenv("EDEN_NX2_TENSOR_EMULATION"); option && *option) {
+        return *option != '0';
+    }
+    // Mesa's Intel driver takes minutes to compile an emulated network (Ocarina of Time's has 768
+    // matrix multiplies) and then runs it at about 8 FPS. The upscale stand-in draws instead.
+    // The Steam Deck's Van Gogh GPU (RADV) is the same: the network keeps all 8 CUs busy and the
+    // intro stays at 8 FPS, against about 55 FPS without it.
+    switch (device.GetDriverID()) {
+    case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:
+        return false;
+    case VK_DRIVER_ID_MESA_RADV:
+        return device.GetModelName().find("VANGOGH") == std::string_view::npos;
+    default:
+        return true;
+    }
 }
 
 bool RasterizerVulkan::SupportsGameDlssNetwork() const {

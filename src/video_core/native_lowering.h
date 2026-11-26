@@ -45,6 +45,14 @@ struct NativeLoweringInputs {
     u64 native_code_address{};
 };
 
+/// Where the host doesn't emulate tensor programs (RasterizerVulkan::EmulatesNativeTensorPrograms),
+/// every lowering rejects matrix multiplies, so the upscale stand-in takes those programs. Set
+/// before the pipeline cache loads.
+void SetNativeMatrixRejected(bool rejected);
+/// Whether lowerings reject matrix multiplies (never for Donkey Kong Bananza, see
+/// KeplerCompute::EmulatesNativeTensorPrograms)
+[[nodiscard]] bool RejectsNativeMatrix();
+
 /// Byte offsets of the trap instructions, whose guards the caller verifies before lowering
 [[nodiscard]] std::vector<u32> NativeTrapOffsets(
     std::span<const Shader::Ampere::Instruction> native);
