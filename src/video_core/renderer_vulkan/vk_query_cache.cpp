@@ -314,10 +314,21 @@ public:
         resolve_buffers.push_back(resolve_buffer_index);
         size_t base_offset = 0;
         // AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query, ~5 ms
-        // a frame in Ocarina). Queries complete in order on the queue, so waiting for the newest
-        // one is enough before copying the range without the wait.
+        // a frame in Ocarina), and Intel's by about the same (3.1 us each: 220 us a copy, 17-18
+        // copies a frame, 2.7 ms measured on Xe3). Queries complete in order on the queue, so
+        // waiting for the newest one is enough before copying the range without the wait.
+        // EDEN_NX2_QUERY_WAIT_LAST=0 waits on every query of the copy again, as before this change,
+        // for an A/B of the fix on its own.
+        static const bool wait_last_enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_QUERY_WAIT_LAST");
+            return value == nullptr || std::string_view{value} != "0";
+        }();
         const bool wait_on_last =
-            driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+            wait_last_enabled &&
+            (driver_id == VK_DRIVER_ID_AMD_PROPRIETARY ||
+             driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+             driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS ||
+             driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA);
 
         ApplyBanksWideOp<true>(pending_sync, [&](SamplesQueryBank* bank, size_t start,
                                                  size_t amount) {
