@@ -773,15 +773,38 @@ bool HardAffinityRequested() {
     return requested;
 }
 
+/// The process-wide affinity mask Windows reports, which bounds every thread of the process; 0 when
+/// it cannot be read. EDEN_NX2_PROCESS_MASK sets it, as Task Manager's Set affinity does.
+u64 ProcessAffinity() {
+    DWORD_PTR process = 0;
+    DWORD_PTR system = 0;
+    return GetProcessAffinityMask(GetCurrentProcess(), &process, &system) != FALSE
+               ? static_cast<u64>(process)
+               : u64{0};
+}
+
 /// Restricts the current thread to `ids` and reports, once per role, what it took: the CPU sets
 /// always, and with EDEN_NX2_HARD_AFFINITY=1 or a mask switch the group affinity mask as well.
 void PlaceCurrentThread(const std::vector<ULONG>& ids, PlacementRole role, bool hard) {
     if (ids.empty()) {
         return;
     }
-    SelectCurrentThreadCpuSets(ids);
     u32 processors = 0;
-    const u64 mask = AffinityMaskFor(ids, processors);
+    u64 mask = AffinityMaskFor(ids, processors);
+    const u64 process = ProcessAffinity();
+    if (process != 0 && (mask & process) != mask) {
+        mask &= process;
+        processors = 0;
+        for (u64 bits = mask; bits != 0; bits &= bits - 1) {
+            ++processors;
+        }
+        if (mask == 0) {
+            LOG_INFO(Common, "{}: none of {} processors is in the process affinity, left to it",
+                     role == PlacementRole::Guest ? "Guest cores" : "Fast threads", ids.size());
+            return;
+        }
+    }
+    SelectCurrentThreadCpuSets(ids);
     bool masked = false;
     if ((hard || HardAffinityRequested()) && mask != 0) {
         GROUP_AFFINITY affinity{};
@@ -917,6 +940,53 @@ void ApplyProcessPrioritySwitch() {
                      GetPriorityClass(GetCurrentProcess()));
         } else {
             LOG_WARNING(Common, "Could not set the process priority class to {}", value);
+        }
+        return true;
+    }();
+    (void)applied;
+#endif
+}
+
+/// EDEN_NX2_PROCESS_MASK=<hex>: bind the whole process to those processors, as Task Manager's Set
+/// affinity does. Every thread the build does not place itself (Qt, audio, input, the emulator
+/// thread) then lives there too, which matters on a hybrid CPU whose performance cores are
+/// throttled under a shared power budget: Ocarina of Time on the Ultra 9 386H kept 25.6 fps with
+/// the process on the eight efficiency cores 4-11 against 23.8 with only the guest and GPU threads
+/// placed on them.
+void ApplyProcessAffinitySwitch() {
+#ifdef _WIN32
+    static const bool applied = [] {
+        const char* value = std::getenv("EDEN_NX2_PROCESS_MASK");
+        if (value == nullptr) {
+            return true;
+        }
+        char* end = nullptr;
+        const unsigned long long asked = std::strtoull(value, &end, 16);
+        if (end == value || asked == 0) {
+            LOG_WARNING(Common, "EDEN_NX2_PROCESS_MASK={} is not a hexadecimal processor mask",
+                        value);
+            return true;
+        }
+        DWORD_PTR before = 0;
+        DWORD_PTR system = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &before, &system) == FALSE) {
+            LOG_WARNING(Common, "Could not read the process affinity mask");
+            return true;
+        }
+        const DWORD_PTR wanted = static_cast<DWORD_PTR>(asked) & system;
+        u32 processors = 0;
+        for (u64 bits = wanted; bits != 0; bits &= bits - 1) {
+            ++processors;
+        }
+        if (wanted == 0) {
+            LOG_WARNING(Common, "EDEN_NX2_PROCESS_MASK={:#x} matches no processor", asked);
+            return true;
+        }
+        if (SetProcessAffinityMask(GetCurrentProcess(), wanted) != FALSE) {
+            LOG_INFO(Common, "Process affinity: {} processors, mask {:#x} ({:#x} -> {:#x})",
+                     processors, wanted, before, wanted);
+        } else {
+            LOG_WARNING(Common, "Could not set the process affinity mask to {:#x}", wanted);
         }
         return true;
     }();

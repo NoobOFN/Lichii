@@ -151,6 +151,11 @@ void SetCurrentThreadToGuestCores();
 /// class (Windows), once, from the first guest core thread. Unset leaves it at normal.
 void ApplyProcessPrioritySwitch();
 
+/// EDEN_NX2_PROCESS_MASK=<hex>: bind the whole process to those processors (Windows), once, from
+/// the first guest core thread, as Task Manager's Set affinity does. Threads this build places
+/// itself are then kept inside it. Unset leaves the process on every processor.
+void ApplyProcessAffinitySwitch();
+
 enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
 
 /// The experimental pin_gpu_threads setting (Windows and Linux): the split GPU thread's front and
