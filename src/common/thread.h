@@ -138,6 +138,19 @@ void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
 
+/// Efficiency processors a guest core set needs before EDEN_NX2_GUEST_CORES=efficiency moves the
+/// guest cores there (the Switch 2 has six cores).
+constexpr std::size_t MinGuestEfficiencyProcessors = 6;
+
+/// The guest cores' placement. EDEN_NX2_GUEST_CORES=performance pins them to the performance
+/// cores, =efficiency to the efficiency cores when the host has MinGuestEfficiencyProcessors of
+/// them, and any other value places them as the fast threads are.
+void SetCurrentThreadToGuestCores();
+
+/// EDEN_NX2_PROCESS_PRIORITY=high|above|normal raises or lowers the whole process's priority
+/// class (Windows), once, from the first guest core thread. Unset leaves it at normal.
+void ApplyProcessPrioritySwitch();
+
 enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
 
 /// The experimental pin_gpu_threads setting (Windows and Linux): the split GPU thread's front and

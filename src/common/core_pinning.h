@@ -20,6 +20,8 @@ struct LogicalProcessor {
     u32 core;
     /// Higher is faster. Equal on every processor of a CPU that is not hybrid.
     u8 efficiency_class;
+    /// The processor's index within its processor group, which is the bit an affinity mask takes.
+    u32 logical;
 };
 
 /// Physical cores of the fastest class needed before the GPU threads are pinned.

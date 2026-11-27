@@ -6,9 +6,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -502,7 +504,8 @@ const WindowsCpuSets& CpuSets() {
                 const u32 core =
                     (static_cast<u32>(info->CpuSet.Group) << 8) | info->CpuSet.CoreIndex;
                 result.processors.push_back({static_cast<u32>(info->CpuSet.Id), core,
-                                             static_cast<u8>(info->CpuSet.EfficiencyClass)});
+                                             static_cast<u8>(info->CpuSet.EfficiencyClass),
+                                             info->CpuSet.LogicalProcessorIndex});
                 best = (std::max)(best, static_cast<u8>(info->CpuSet.EfficiencyClass));
             }
             offset += info->Size;
@@ -515,7 +518,14 @@ const WindowsCpuSets& CpuSets() {
         // timing, fencing) crowd fewer performance processors: an i5-1235U (2 P cores, 4 logical)
         // ran Ocarina of Time at 9.3 FPS with them kept there, 11.5 FPS with the placement off.
         constexpr size_t MinPerformanceProcessors = 8;
-        const bool few_performance = result.performance.size() < MinPerformanceProcessors;
+        // EDEN_NX2_CPU_PLACEMENT=1 keeps the fast threads on the performance cores however few
+        // there are, for the A/B against EDEN_NX2_GUEST_CORES=efficiency: the guest cores take the
+        // efficiency cores, the GPU, present and timing threads the performance ones.
+        const char* placement = std::getenv("EDEN_NX2_CPU_PLACEMENT");
+        const bool force_performance =
+            placement != nullptr && std::strtol(placement, nullptr, 10) == 1;
+        const bool few_performance =
+            !force_performance && result.performance.size() < MinPerformanceProcessors;
         result.hybrid = !result.efficiency.empty() && !few_performance;
         if (!result.efficiency.empty() && few_performance) {
             LOG_INFO(Common,
@@ -606,7 +616,8 @@ std::vector<Common::LogicalProcessor> LinuxProcessors() {
         const u32 capacity =
             read(cpu, "cpu_capacity").value_or(CPU_ISSET(cpu, &efficiency) ? 512U : 1024U);
         processors.push_back({static_cast<u32>(cpu), (*package << 16) | *core,
-                              static_cast<u8>((std::min)(capacity, 1024U) >> 3)});
+                              static_cast<u8>((std::min)(capacity, 1024U) >> 3),
+                              static_cast<u32>(cpu)});
     }
     return processors;
 }
@@ -714,6 +725,112 @@ void SetCurrentThreadName(const char* name) {
 #endif
 }
 
+namespace {
+/// EDEN_NX2_FAST_CORES and EDEN_NX2_GUEST_CORES pick the processors of a thread group:
+/// "performance", "efficiency", or 'a' when unset or unrecognised.
+char RequestedCoreClass(const char* variable) {
+#ifdef _WIN32
+    if (const char* value = std::getenv(variable); value != nullptr) {
+        if (std::strcmp(value, "performance") == 0) {
+            return 'p';
+        }
+        if (std::strcmp(value, "efficiency") == 0) {
+            return 'e';
+        }
+    }
+#else
+    (void)variable;
+#endif
+    return 'a';
+}
+} // namespace
+
+namespace {
+enum class PlacementRole : u32 { Fast = 0, Guest = 1 };
+
+/// The affinity mask whose bits are the logical processors behind `ids`, and how many that is. A
+/// processor group holds 64 of them; this process runs in one group.
+u64 AffinityMaskFor(const std::vector<ULONG>& ids, u32& processors) {
+    u64 mask = 0;
+    processors = 0;
+    for (const LogicalProcessor& processor : CpuSets().processors) {
+        if (processor.logical < 64 && std::ranges::find(ids, processor.id) != ids.end()) {
+            mask |= u64{1} << processor.logical;
+            ++processors;
+        }
+    }
+    return mask;
+}
+
+/// EDEN_NX2_HARD_AFFINITY=1: restrict the thread with the group affinity mask as well as with the
+/// CPU sets. CPU sets alone are a preference Windows may override and Task Manager's affinity
+/// dialog does not show; the mask binds the thread and reads back through GetThreadGroupAffinity.
+bool HardAffinityRequested() {
+    static const bool requested = [] {
+        const char* value = std::getenv("EDEN_NX2_HARD_AFFINITY");
+        return value != nullptr && std::strtol(value, nullptr, 10) == 1;
+    }();
+    return requested;
+}
+
+/// Restricts the current thread to `ids` and reports, once per role, what it took: the CPU sets
+/// always, and with EDEN_NX2_HARD_AFFINITY=1 or a mask switch the group affinity mask as well.
+void PlaceCurrentThread(const std::vector<ULONG>& ids, PlacementRole role, bool hard) {
+    if (ids.empty()) {
+        return;
+    }
+    SelectCurrentThreadCpuSets(ids);
+    u32 processors = 0;
+    const u64 mask = AffinityMaskFor(ids, processors);
+    bool masked = false;
+    if ((hard || HardAffinityRequested()) && mask != 0) {
+        GROUP_AFFINITY affinity{};
+        if (GetThreadGroupAffinity(GetCurrentThread(), &affinity)) {
+            affinity.Mask = mask;
+            masked = SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr) != FALSE;
+            if (!masked) {
+                LOG_WARNING(Common, "Could not set the affinity mask {:#x}", mask);
+            }
+        }
+    }
+    static std::atomic<u32> reported{0};
+    const u32 bit = 1u << static_cast<u32>(role);
+    if ((reported.fetch_or(bit) & bit) == 0) {
+        LOG_INFO(Common, "{}: {} processors, mask {:#x}, {}", role == PlacementRole::Guest
+                                                                  ? "Guest cores"
+                                                                  : "Fast threads",
+                 processors, mask,
+                 masked ? "hard affinity" : "CPU sets only (EDEN_NX2_HARD_AFFINITY=1 for a mask)");
+    }
+}
+
+/// The processors behind a hexadecimal mask switch such as EDEN_NX2_GUEST_MASK=300f, or nothing
+/// when the variable is unset, unreadable or matches none of this process's processors.
+std::optional<std::vector<ULONG>> MaskedProcessors(const char* variable) {
+    const char* value = std::getenv(variable);
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    char* end = nullptr;
+    const unsigned long long mask = std::strtoull(value, &end, 16);
+    if (end == value || mask == 0) {
+        LOG_WARNING(Common, "{}={} is not a hexadecimal processor mask", variable, value);
+        return std::nullopt;
+    }
+    std::vector<ULONG> ids;
+    for (const LogicalProcessor& processor : CpuSets().processors) {
+        if (processor.logical < 64 && ((mask >> processor.logical) & 1) != 0) {
+            ids.push_back(processor.id);
+        }
+    }
+    if (ids.empty()) {
+        LOG_WARNING(Common, "{}={:#x} matches no processor of this process", variable, mask);
+        return std::nullopt;
+    }
+    return ids;
+}
+} // namespace
+
 void SetCurrentThreadToPerformanceCores() {
 #if defined(__ANDROID__)
     if (ADPF::AddCurrentThread(ADPF::Session::Render)) {
@@ -722,9 +839,88 @@ void SetCurrentThreadToPerformanceCores() {
     }
     SetCurrentThreadCoreGroup(CoreGroup::Performance);
 #elif defined(_WIN32)
-    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
-        SelectCurrentThreadCpuSets(sets.performance);
+    if (const auto masked = MaskedProcessors("EDEN_NX2_FAST_MASK")) {
+        PlaceCurrentThread(*masked, PlacementRole::Fast, true);
+        return;
     }
+    const WindowsCpuSets& sets = CpuSets();
+    const char requested = RequestedCoreClass("EDEN_NX2_FAST_CORES");
+    if (!sets.performance.empty() &&
+        (requested == 'p' || (requested != 'e' && sets.hybrid))) {
+        PlaceCurrentThread(sets.performance, PlacementRole::Fast, false);
+    } else if (requested == 'e' && !sets.efficiency.empty()) {
+        PlaceCurrentThread(sets.efficiency, PlacementRole::Fast, false);
+    } else {
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true)) {
+            LOG_INFO(Common, "Fast threads: left to Windows (EDEN_NX2_FAST_CORES={})",
+                     std::getenv("EDEN_NX2_FAST_CORES") == nullptr ? "unset"
+                                                                  : std::getenv("EDEN_NX2_FAST_CORES"));
+        }
+    }
+#endif
+}
+
+void SetCurrentThreadToGuestCores() {
+#if defined(_WIN32)
+    // A frame ends when its slowest guest core does, so a guest thread left on a slower processor
+    // holds the others back. The v2c A/B on Ocarina of Time (4 P + 12 E Core Ultra 9 386H) put
+    // Windows' own placement at 26.2-26.7 presents a second, the guest cores on the efficiency
+    // cores at 24.0-24.6, and the whole emulator on the four performance cores at 21.5: the fast
+    // cores win, and the placement to test next is the guest cores alone on them.
+    const WindowsCpuSets& sets = CpuSets();
+    const char requested = RequestedCoreClass("EDEN_NX2_GUEST_CORES");
+    if (const auto masked = MaskedProcessors("EDEN_NX2_GUEST_MASK")) {
+        PlaceCurrentThread(*masked, PlacementRole::Guest, true);
+        return;
+    }
+    if (requested == 'p' && !sets.performance.empty()) {
+        PlaceCurrentThread(sets.performance, PlacementRole::Guest, false);
+        return;
+    }
+    if (requested == 'e' && sets.efficiency.size() >= MinGuestEfficiencyProcessors) {
+        PlaceCurrentThread(sets.efficiency, PlacementRole::Guest, false);
+        return;
+    }
+    static std::atomic<bool> reported{false};
+    if (!reported.exchange(true)) {
+        LOG_INFO(Common, "Guest cores: left to Windows (EDEN_NX2_GUEST_CORES={})",
+                 std::getenv("EDEN_NX2_GUEST_CORES") == nullptr ? "unset"
+                                                              : std::getenv("EDEN_NX2_GUEST_CORES"));
+    }
+#endif
+    SetCurrentThreadToPerformanceCores();
+}
+
+void ApplyProcessPrioritySwitch() {
+#ifdef _WIN32
+    static const bool applied = [] {
+        const char* value = std::getenv("EDEN_NX2_PROCESS_PRIORITY");
+        if (value == nullptr) {
+            return true;
+        }
+        DWORD priority_class = 0;
+        if (std::strcmp(value, "high") == 0) {
+            priority_class = HIGH_PRIORITY_CLASS;
+        } else if (std::strcmp(value, "above") == 0) {
+            priority_class = ABOVE_NORMAL_PRIORITY_CLASS;
+        } else if (std::strcmp(value, "normal") == 0) {
+            priority_class = NORMAL_PRIORITY_CLASS;
+        } else {
+            LOG_WARNING(Common, "EDEN_NX2_PROCESS_PRIORITY={}: expected high, above or normal",
+                        value);
+            return true;
+        }
+        const DWORD before = GetPriorityClass(GetCurrentProcess());
+        if (SetPriorityClass(GetCurrentProcess(), priority_class)) {
+            LOG_INFO(Common, "Process priority class: {} ({:#x} -> {:#x})", value, before,
+                     GetPriorityClass(GetCurrentProcess()));
+        } else {
+            LOG_WARNING(Common, "Could not set the process priority class to {}", value);
+        }
+        return true;
+    }();
+    (void)applied;
 #endif
 }
 
