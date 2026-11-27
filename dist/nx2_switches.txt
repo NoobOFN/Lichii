@@ -17,6 +17,26 @@ EDEN_NX2_SPLIT=2
 # Batch GPU fence syncpoints to reduce host driver overhead and smooth frametimes.
 EDEN_NX2_FENCE_BATCH=1
 
+# --- CPU placement (hybrid CPUs) ---
+# Bind the whole process to a processor mask, as Task Manager's Set affinity does, so the threads
+# this build does not place (Qt, audio, input, the emulator thread) cannot land on a core the host
+# is throttling. Threads this build places itself (GUEST_MASK/FAST_MASK below) are kept inside it.
+# Masks are hexadecimal, bit n = logical processor n, so 0xfff0 is processors 4 to 15.
+# Measured on a Core Ultra 9 386H: the host cuts the performance cores' clock while the iGPU works
+# (4 threads alone there hold 3.4 GHz, 1.5-2.6 GHz during the game), and the whole process on the
+# efficiency cores took Ocarina of Time from 21.2-22.0 to 25.9-26.9 fps, with no FPS decay over a
+# long run. Unset leaves every thread to Windows, which uses the performance cores.
+#EDEN_NX2_PROCESS_MASK=fff0
+
+# Guest cores by mask, as a hard affinity. On that CPU the guest cores run 20% faster on 4-11 than
+# on 8-15, so the 6 guest threads go to the fast half or to the low-power cores depending on which
+# side the frame is waiting for: give them what the renderer does not need.
+#EDEN_NX2_GUEST_MASK=ff00
+
+# Front, back and Vulkan worker by mask. On the four fast efficiency cores 4-7 they record a frame
+# ~2 ms faster than on the low-power ones.
+#EDEN_NX2_FAST_MASK=f0
+
 # Leave buffer downloads disabled on Switch 2 (default): forcing downloads (=1) copies back
 # 90-220 MB/s of buffers CPU never touches, causing heavy mutex contention and dropping FPS by ~38-63%.
 #EDEN_NX2_BUFFER_DOWNLOADS=1
