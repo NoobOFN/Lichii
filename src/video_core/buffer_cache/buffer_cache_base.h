@@ -1051,13 +1051,28 @@ private:
     /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
     /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
     /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
+    /// GPU-written ranges up to this many bytes are copied back at the next fence even with
+    /// AsyncBufferDownloads off. Small ranges cost little to copy, and they are where small
+    /// dynamic objects keep their data: a sprite's vertices and colours, particles, the additive
+    /// glow and distant props of Ocarina of Time. The guest rewrites that data every frame, so a
+    /// GPU write to it that only reaches guest memory on a CPU read is read back one frame old by
+    /// the next draw: with EDEN_NX2_BUFFER_DOWNLOADS off the glow and the trees behind the fog
+    /// dimmed and brightened frame by frame there. 64 KiB keeps the copy at a few KiB per fence
+    /// (Ocarina of Time: no measurable cost, and it ran faster than without it).
+    static constexpr u64 MaxFenceDownloadBytes = 64 * 1024;
+
+    bool DownloadsSmallRangesAtFence(u64 size) const {
+        return size != 0 && size <= MaxFenceDownloadBytes;
+    }
+
     bool DownloadsAtFence(DAddr device_addr, u64 size) noexcept {
-        return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
+        return AsyncBufferDownloads() || DownloadsSmallRangesAtFence(size) ||
+               memory_tracker.IsRegionPreflushable(device_addr, size);
     }
 
     /// Whether the range holds GPU-written data that no fence downloads (not Preflushable).
     bool HasGpuWritesNotDownloadedAtFence(DAddr device_addr, u64 size) {
-        if (AsyncBufferDownloads()) {
+        if (AsyncBufferDownloads() || DownloadsSmallRangesAtFence(size)) {
             return false;
         }
         bool found = false;
@@ -1086,7 +1101,7 @@ private:
             const char* value = std::getenv("EDEN_NX2_EXACT_PREFLUSH");
             return value == nullptr || value[0] != '0';
         }();
-        if (AsyncBufferDownloads()) {
+        if (AsyncBufferDownloads() || DownloadsSmallRangesAtFence(size)) {
             uncommitted_gpu_modified_ranges.Add(device_addr, size);
             return;
         }
