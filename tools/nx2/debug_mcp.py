@@ -515,11 +515,22 @@ def main():
                         help=f"host:port of EDEN_NX2_DEBUG_SERVER (default {DEFAULT_SERVER})")
     parser.add_argument("--call", metavar="JSON",
                         help='run one request and exit, e.g. \'{"method":"screenshot","params":{}}\'')
+    parser.add_argument("--call-file", metavar="PATH",
+                        help="like --call, but read the request from a file ('-' for stdin): a shell "
+                             "that strips the quotes of an argument, as Windows PowerShell does for "
+                             "native commands, cannot pass JSON text itself")
     parser.add_argument("--out", metavar="PNG", help="with --call: where to save the PNG")
     args = parser.parse_args()
     adapter = Adapter(Emulator(args.server))
-    if args.call is not None:
-        sys.exit(call_once(adapter, args.call, args.out, sys.stdout))
+    if args.call is not None or args.call_file is not None:
+        request_text = args.call
+        if args.call_file is not None:
+            if args.call_file == "-":
+                request_text = sys.stdin.read()
+            else:
+                with open(args.call_file, encoding="utf-8") as file:
+                    request_text = file.read()
+        sys.exit(call_once(adapter, request_text, args.out, sys.stdout))
     serve(adapter, sys.stdin, sys.stdout)
 
 
